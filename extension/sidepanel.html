@@ -95,9 +95,11 @@
             <strong>preview</strong>
           </button>
           <div id="contextPreview" class="context-preview" hidden></div>
-          <div class="composer-input-wrap">
+          <div class="composer-input-wrap" id="composerDropZone">
             <textarea id="promptInput" rows="3" placeholder="Ask Hermes about this page..."></textarea>
+            <div id="dropOverlay" class="drop-overlay" hidden>Drop files to attach</div>
             <button id="attachMenuButton" class="attach-menu-button composer-plus" type="button" aria-haspopup="dialog" aria-expanded="false" aria-label="Attach context" title="Attach context">+</button>
+            <section id="skillMenu" class="skill-menu" role="listbox" aria-label="Hermes skill suggestions" hidden></section>
             <section id="attachMenu" class="attach-menu" role="dialog" aria-label="Attach context" hidden>
               <p class="attach-menu-heading">Attach</p>
               <button type="button" data-attach="files">▧ Files...</button>
@@ -113,9 +115,11 @@
           <input id="fileInput" type="file" multiple hidden />
           <input id="imageInput" type="file" accept="image/*" multiple hidden />
           <input id="folderInput" type="file" webkitdirectory directory multiple hidden />
-          <p class="composer-help">Enter sends. Shift+Enter adds a new line. Ctrl+V pastes images.</p>
+          <p class="composer-help">Enter sends. Shift+Enter adds a new line. Ctrl+V, drag/drop, or + attaches files.</p>
+          <p id="queueNotice" class="queue-notice" hidden></p>
           <div class="composer-actions">
-            <button id="refreshButton" class="secondary" type="button">Refresh</button>
+            <button id="refreshButton" class="secondary icon-refresh" type="button" title="Refresh page context" aria-label="Refresh page context">↻</button>
+            <button id="stopButton" class="secondary stop-button" type="button" hidden>Stop</button>
             <button id="sendButton" type="submit">Ask Hermes</button>
           </div>
         </form>
@@ -162,6 +166,26 @@
           </div>
           <button id="closeSettingsButton" class="settings-button" type="button">CLOSE</button>
         </header>
+
+        <section class="settings-section profile-settings" aria-labelledby="profileTitle">
+          <div class="settings-section-head">
+            <div>
+              <h3 id="profileTitle">Agent Profile</h3>
+              <p>Choose which Hermes agent profile the Browser should use when the local gateway exposes profiles.</p>
+            </div>
+          </div>
+
+          <div class="profile-row">
+            <label>
+              Active profile
+              <select id="profileSelect" name="profileSelect">
+                <option value="">Detect from Hermes gateway</option>
+              </select>
+            </label>
+            <button id="refreshProfilesButton" class="secondary" type="button">↻ Profiles</button>
+          </div>
+          <p id="profileStatus" class="hint">Profiles sync after connecting to Hermes.</p>
+        </section>
 
         <section class="settings-section appearance-settings" aria-labelledby="appearanceTitle">
           <div class="settings-section-head">

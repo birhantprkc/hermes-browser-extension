@@ -812,10 +812,41 @@ button:disabled { cursor: wait; opacity: 0.55; transform: none; }
   box-shadow: inset 0 0 0 1px rgba(var(--hermes-ink-rgb),0.04);
 }
 .composer-help { margin: 6px 0 0; color: var(--hermes-muted); font-size: 10px; line-height: 1.25; text-transform: uppercase; letter-spacing: 0.1em; }
+.queue-notice {
+  margin: 7px 0 0;
+  border: 1px solid rgba(var(--hermes-accent-rgb),0.48);
+  background: rgba(var(--hermes-accent-rgb),0.12);
+  color: var(--hermes-ink);
+  padding: 6px 8px;
+  font-size: 10px;
+  line-height: 1.25;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.queue-notice[hidden] { display: none; }
 .composer-input-wrap {
   position: relative;
   min-width: 0;
 }
+.composer-input-wrap.dragging textarea {
+  border-color: var(--hermes-accent);
+  box-shadow: 0 0 0 2px var(--hermes-accent), inset 0 0 0 1px rgba(var(--hermes-accent-rgb),0.65);
+}
+.drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--hermes-accent);
+  background: rgba(var(--hermes-panel-rgb),0.9);
+  color: var(--hermes-ink);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  pointer-events: none;
+}
+.drop-overlay[hidden] { display: none; }
 .attach-menu-button.composer-plus {
   position: absolute;
   left: 9px;
@@ -854,6 +885,40 @@ button:disabled { cursor: wait; opacity: 0.55; transform: none; }
   box-shadow: 0 -12px 30px rgba(var(--hermes-shadow-rgb),0.26);
   padding: 5px 0;
 }
+.skill-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 72;
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid rgba(var(--hermes-fg-rgb),0.44);
+  background: var(--hermes-menu-bg);
+  color: rgba(var(--hermes-fg-rgb),0.95);
+  box-shadow: 0 -12px 30px rgba(var(--hermes-shadow-rgb),0.26);
+  padding: 5px 0;
+}
+.skill-menu[hidden] { display: none; }
+.skill-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  border: 0;
+  background: transparent;
+  color: rgba(var(--hermes-fg-rgb),0.95);
+  padding: 7px 10px;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+}
+.skill-option:hover,
+.skill-option.selected { background: rgba(var(--hermes-fg-rgb),0.08); color: var(--hermes-fg); }
+.skill-option-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skill-option-command { color: rgba(var(--hermes-fg-rgb),0.62); font-size: 10px; }
 .attach-menu-heading {
   margin: 0;
   padding: 5px 10px;
@@ -928,8 +993,17 @@ textarea:focus, input:focus, select:focus { border-color: var(--hermes-accent); 
   justify-content: space-between;
   gap: 10px;
 }
-.composer-actions { margin-top: 8px; }
+.composer-actions { margin-top: 8px; grid-template-columns: auto auto minmax(0, 1fr); }
 .composer-actions button, .settings-dialog footer button { min-height: 36px; padding: 9px 10px 7px; font-size: 10px; font-weight: 400; }
+.icon-refresh {
+  width: 36px;
+  min-width: 36px;
+  padding-inline: 0 !important;
+  font-size: 16px !important;
+  line-height: 1;
+}
+.stop-button { border-color: var(--danger); color: var(--danger); }
+.stop-button:not([hidden]) { display: inline-flex; align-items: center; justify-content: center; }
 .secondary { background: var(--hermes-paper); color: var(--hermes-ink); }
 #sendButton, #saveSettingsButton, #connectButton { background: var(--hermes-primary-bg); color: var(--hermes-primary-fg); border-color: var(--hermes-primary-border); }
 #sendButton:hover, #saveSettingsButton:hover, #connectButton:hover { background: var(--hermes-paper); color: var(--hermes-ink); border-color: var(--hermes-line-strong); }
@@ -1307,6 +1381,17 @@ textarea:focus, input:focus, select:focus { border-color: var(--hermes-accent); 
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
+}
+.profile-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+.profile-row button { min-height: 36px; padding: 9px 10px 7px; font-size: 10px; }
+.profile-row select { margin-top: 6px; }
+@media (max-width: 420px) {
+  .profile-row { grid-template-columns: 1fr; align-items: stretch; }
 }
 .appearance-row strong,
 .theme-setting > strong {

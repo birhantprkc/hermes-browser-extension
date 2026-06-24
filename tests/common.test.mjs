@@ -15,9 +15,13 @@ import {
   groupSessionsForMenu,
   isRestrictedUrl,
   normalizeHermesModels,
+  normalizeHermesProfiles,
   normalizeHermesSessions,
+  normalizeHermesSkills,
   redactSensitiveText,
   renderMarkdown,
+  skillCommandForName,
+  skillSuggestionsForInput,
   shouldSubmitComposerKey,
   summarizeTabs,
 } from '../extension/lib/common.mjs';
@@ -193,6 +197,29 @@ test('normalizeHermesSessions and groupSessionsForMenu mirror Hermes Desktop sou
   const groups = groupSessionsForMenu(sessions, 'api_1');
   assert.deepEqual(groups.map((group) => group.label), ['Hermes Browser Extension', 'API', 'Telegram']);
   assert.equal(groups[1].sessions[0].selected, true);
+});
+
+test('skill helpers normalize slash commands and suggest matches from / or @ input', () => {
+  const skills = normalizeHermesSkills({ data: [
+    { name: 'Hermes Browser Development', description: 'Browser extension workflow' },
+    { name: 'test_driven_development', description: 'TDD workflow', category: 'software-development' },
+  ] });
+  assert.deepEqual(skills.map((skill) => skill.command), ['/hermes-browser-development', '/test-driven-development']);
+  assert.equal(skillCommandForName('test_driven_development'), '/test-driven-development');
+  assert.deepEqual(skillSuggestionsForInput('/herm', skills).map((skill) => skill.command), ['/hermes-browser-development']);
+  assert.deepEqual(skillSuggestionsForInput('@test', skills).map((skill) => skill.command), ['/test-driven-development']);
+  assert.deepEqual(skillSuggestionsForInput('normal message', skills), []);
+});
+
+test('normalizeHermesProfiles marks active profile and keeps useful metadata', () => {
+  const profiles = normalizeHermesProfiles({ active: 'max', data: [
+    { name: 'default', model: 'gpt-5.5', skill_count: 40, gateway_running: true },
+    { name: 'max', model: 'claude-sonnet-4.6', provider: 'anthropic', skill_count: 12 },
+  ] });
+  assert.deepEqual(profiles.map((profile) => profile.name), ['default', 'max']);
+  assert.equal(profiles[0].active, false);
+  assert.equal(profiles[1].active, true);
+  assert.equal(profiles[1].model, 'claude-sonnet-4.6');
 });
 
 test('YouTube transcript helpers parse ids, providers, timedtext, and prompt text', () => {
