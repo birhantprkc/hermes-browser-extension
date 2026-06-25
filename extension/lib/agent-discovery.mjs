@@ -1,8 +1,7 @@
 // agent-discovery.mjs
-// Discover Hermes agent gateways on the local network by probing /health
-// across a configurable port range. This is the multi-agent / multi-port
-// discovery layer that backs the "Connected agent" picker in the side panel
-// settings. Extracted from sidepanel.js for testability.
+// Discover local Hermes API gateways by probing /health across a configurable
+// localhost port range. This backs the "Connected agent" picker in the side
+// panel settings and is extracted from sidepanel.js for testability.
 
 import { normalizeGatewayUrl } from './common.mjs';
 

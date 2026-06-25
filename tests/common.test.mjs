@@ -508,17 +508,16 @@ test('discoverModelsFromSessions extracts unique model names from /api/sessions'
   const result = await discoverModelsFromSessions({ apiFetch, readJsonResponse });
   assert.equal(result.ok, true);
   assert.equal(result.error, '');
-  // 3 unique model IDs
-  assert.equal(result.models.length, 3);
+  // 2 unique real model IDs; the synthetic fallback alias is intentionally skipped.
+  assert.equal(result.models.length, 2);
   // Sorted most-recent first
-  assert.equal(result.models[0].id, 'hermes-agent');
-  assert.equal(result.models[1].id, 'gpt-5.5');
-  assert.equal(result.models[2].id, 'MiniMax-M3');
+  assert.equal(result.models[0].id, 'gpt-5.5');
+  assert.equal(result.models[1].id, 'MiniMax-M3');
   // Provider derived from model id
-  assert.equal(result.models[1].provider, 'openai');
-  assert.equal(result.models[2].provider, 'minimax');
+  assert.equal(result.models[0].provider, 'openai');
+  assert.equal(result.models[1].provider, 'minimax');
   // Session counts accumulated
-  assert.equal(result.models[2].sessionCount, 2);
+  assert.equal(result.models[1].sessionCount, 2);
 });
 
 test('discoverModelsFromSessions returns ok=false with empty list on auth failure', async () => {
@@ -535,7 +534,8 @@ test('deriveProviderFromModelId handles the common providers we know about', asy
   const { deriveProviderFromModelId } = await import('../extension/lib/model-discovery.mjs');
   assert.equal(deriveProviderFromModelId('MiniMax-M3'), 'minimax');
   assert.equal(deriveProviderFromModelId('gpt-5.5'), 'openai');
-  assert.equal(deriveProviderFromModelId('openai-codex/gpt-5.4'), 'openai');
+  assert.equal(deriveProviderFromModelId('openai-codex/gpt-5.4'), 'openai-codex');
+  assert.equal(deriveProviderFromModelId('openai-codex:gpt-5.5'), 'openai-codex');
   assert.equal(deriveProviderFromModelId('kimi-k2.6'), 'moonshot');
   assert.equal(deriveProviderFromModelId('claude-opus-4.8'), 'anthropic');
   assert.equal(deriveProviderFromModelId('gemini-2.5'), 'google');

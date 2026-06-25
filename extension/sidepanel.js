@@ -1650,13 +1650,11 @@ async function applySelectedProfile(profileName = '') {
 // ---------------------------------------------------------------------------
 // Agent picker — multi-gateway discovery (v0.1.3 tweak)
 //
-// The /v1/profiles endpoint is not implemented on Hermes v0.17.0, so the
-// "profile switcher" inside the gateway can't enumerate the user's other
-// agents. Each agent is a separate hermes-cli process bound to its own port
-// (Jon runs 5 agents on 8642-8646). This picker probes /health across a
-// configurable port range and lets the user switch the active gateway URL
-// in one click. Replaces the dead /v1/profiles switcher with a working
-// multi-gateway picker.
+// Some Hermes installs expose multiple local API gateways on adjacent ports.
+// This picker probes /health across a configurable localhost port range and
+// lets the user switch the active gateway URL in one click. It complements the
+// profile selector without relying on every gateway supporting profile switch
+// APIs yet.
 // ---------------------------------------------------------------------------
 
 let discoveredAgents = [];
@@ -1750,7 +1748,7 @@ async function switchAgentGateway(agent) {
     setStatus('ok', 'Already connected', `${agent.name} is already the active gateway.`);
     return;
   }
-  settings = { ...settings, gatewayUrl: nextUrl };
+  settings = { ...settings, gatewayMode: 'local-api', gatewayUrl: nextUrl };
   await chrome.storage.local.set({ hermesBrowserSettings: settings });
   setStatus('ok', 'Switched gateway', `Reconnecting to ${agent.name} (${nextUrl})...`);
   // Re-run the full connect flow against the new gateway.

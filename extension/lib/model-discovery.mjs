@@ -12,7 +12,7 @@ const SESSION_HISTORY_LIMIT = 100;
 const KNOWN_PROVIDER_PREFIXES = [
   // Order matters: most specific first.
   // Provider names that appear as substrings (e.g. `openai-codex/gpt-5.4`).
-  ['openai-codex', 'openai'],
+  ['openai-codex', 'openai-codex'],
   ['openai', 'openai'],
   ['minimax', 'minimax'],
   ['kimi', 'moonshot'],
@@ -73,7 +73,7 @@ export async function discoverModelsFromSessions({
     const buckets = new Map();
     for (const row of rows) {
       const modelId = String(row?.model || '').trim();
-      if (!modelId) continue;
+      if (!modelId || modelId === 'hermes-agent') continue;
       const lastSeen = Number(row?.last_active || row?.started_at || 0);
       const bucket = buckets.get(modelId) || {
         id: modelId,
