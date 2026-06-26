@@ -287,15 +287,6 @@ tests/
   common.test.mjs     utility behavior tests
 ```
 
-## Roadmap
-
-- Native connect/approval flow with Hermes Desktop.
-- Better model/session picker parity with Hermes Desktop.
-- Chrome Web Store packaging after public alpha feedback.
-- Permissioned browser-control MCP bridge behind explicit confirmations.
-- Screenshot/vision workflow.
-- Operator workflows built on browser context.
-
 ## Relationship to Hermes Agent
 
 [Hermes Agent](https://github.com/NousResearch/hermes-agent) is an open-source project by Nous Research. Hermes Browser Extension is a community extension by Jon Komet that connects to a local or remote Hermes API server. It is designed to live at the edge of the ecosystem without adding core tool-schema footprint.

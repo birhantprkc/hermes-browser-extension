@@ -49,15 +49,3 @@ This is a conservative first pass, not a complete security boundary.
 ## API key storage
 
 The Hermes API key is stored in `chrome.storage.local` for the extension. Do not publish screenshots or exported extension storage containing the key.
-
-## Future browser-control layer
-
-If browser control is added in v0.2, it should be implemented behind a local MCP bridge with explicit confirmation for:
-
-- form submission
-- purchases/checkouts
-- messages/emails/posts
-- account settings changes
-- deleting data
-- uploads/downloads
-- financial, healthcare, government, and password-manager sites
