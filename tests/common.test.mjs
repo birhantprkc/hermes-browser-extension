@@ -14,6 +14,7 @@ import {
   buildHermesPrompt,
   clampText,
   collectReadablePageText,
+  contextChipSummary,
   estimateContextWindow,
   extractAssistantText,
   formatContextMeter,
@@ -393,6 +394,39 @@ test('formatContextMeter renders Hermes Desktop style compact usage labels', () 
   const million = formatContextMeter({ estimatedTokens: 214_800, modelContextTokens: 1_000_000 });
   assert.equal(million.compactLabel, '214.8k/1M');
   assert.equal(million.percentLabel, '21%');
+});
+
+test('contextChipSummary separates loading, restricted, error, and captured states', () => {
+  assert.deepEqual(contextChipSummary({ pageContext: null }), {
+    label: '📎 Loading...',
+    title: 'Page context not yet loaded',
+  });
+
+  assert.deepEqual(contextChipSummary({ pageContext: { ok: false, restricted: true, reason: 'Browser internal page' } }), {
+    label: '📎 Restricted · N/A',
+    title: 'Browser internal page',
+  });
+
+  assert.deepEqual(contextChipSummary({ pageContext: { ok: false, error: 'stale content script' } }), {
+    label: '📎 Error · N/A',
+    title: 'stale content script',
+  });
+
+  const captured = contextChipSummary({
+    pageContext: { ok: true, youtubeTranscript: { ok: true } },
+    activeTab: { url: 'https://youtube.com/watch?v=abc' },
+    parts: {
+      selectedText: { enabled: true, chars: 12, estimatedTokens: 3 },
+      pageMetadata: { enabled: true, chars: 80, estimatedTokens: 20 },
+      youtubeTranscript: { enabled: true, chars: 1000, estimatedTokens: 250 },
+      pageText: { enabled: false, chars: 500, estimatedTokens: 125 },
+    },
+  });
+
+  assert.deepEqual(captured, {
+    label: '📎 YouTube + DOM · 1,092 chars · ~273 tok',
+    title: 'https://youtube.com/watch?v=abc',
+  });
 });
 
 test('modelDisplayName strips only the provider prefix and preserves free model suffixes', () => {

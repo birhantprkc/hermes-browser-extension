@@ -261,6 +261,44 @@ export function formatCompactTokenCount(value = 0) {
   return String(Math.round(number));
 }
 
+function formatWholeNumber(value = 0) {
+  return new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(Number(value || 0));
+}
+
+export function contextChipSummary({ pageContext = null, activeTab = null, parts = {} } = {}) {
+  if (!pageContext) {
+    return {
+      label: '📎 Loading...',
+      title: 'Page context not yet loaded',
+    };
+  }
+
+  if (pageContext.restricted) {
+    return {
+      label: '📎 Restricted · N/A',
+      title: pageContext.reason || activeTab?.url || 'Restricted page',
+    };
+  }
+
+  if (pageContext.ok === false) {
+    return {
+      label: '📎 Error · N/A',
+      title: pageContext.error || pageContext.reason || 'Context capture failed',
+    };
+  }
+
+  const attachedParts = [parts.selectedText, parts.pageMetadata, parts.youtubeTranscript, parts.pageText]
+    .filter((part) => part?.enabled);
+  const attachedChars = attachedParts.reduce((total, part) => total + Number(part.chars || 0), 0);
+  const attachedTokens = attachedParts.reduce((total, part) => total + Number(part.estimatedTokens || 0), 0);
+  const adapter = pageContext.youtubeTranscript?.ok ? 'YouTube + DOM' : 'DOM';
+
+  return {
+    label: `📎 ${adapter} · ${formatWholeNumber(attachedChars)} chars · ~${formatWholeNumber(attachedTokens)} tok`,
+    title: activeTab?.url || '',
+  };
+}
+
 export function formatContextMeter({ estimatedTokens = 0, modelContextTokens = 0 } = {}) {
   const used = Math.max(0, Number(estimatedTokens || 0));
   const limit = Math.max(0, Number(modelContextTokens || 0));

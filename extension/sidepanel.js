@@ -10,6 +10,7 @@ import {
   buildHermesPrompt,
   clampText,
   connectionStateForGateway,
+  contextChipSummary,
   encodeSessionId,
   estimateContextWindow,
   estimateTokens,
@@ -1621,26 +1622,10 @@ function renderContextWindow(userText = els.input?.value || '') {
     : `${formatNumber(sessionTokens)} estimated session tokens · unknown max context`;
   els.contextMeterFill.style.width = stats.modelContextTokens ? `${Math.min(100, Math.max(0, meter.percent))}%` : '0%';
 
-  // Chip label: reflect page context state (loading → restricted → error → OK with stats)
   const pc = currentContext?.pageContext;
-  if (!pc) {
-    els.contextChipLabel.textContent = '📎 Loading...';
-    els.contextChip.title = 'Page context not yet loaded';
-  } else if (pc.restricted) {
-    els.contextChipLabel.textContent = '📎 Restricted · N/A';
-    els.contextChip.title = pc.reason || (currentContext.activeTab?.url || 'Restricted page');
-  } else if (!pc.ok) {
-    els.contextChipLabel.textContent = '📎 Error · N/A';
-    els.contextChip.title = pc.error || 'Context capture failed';
-  } else {
-    const attachedParts = [stats.parts.selectedText, stats.parts.pageMetadata, stats.parts.youtubeTranscript, stats.parts.pageText]
-      .filter((part) => part?.enabled);
-    const attachedChars = attachedParts.reduce((total, part) => total + Number(part.chars || 0), 0);
-    const attachedTokens = attachedParts.reduce((total, part) => total + Number(part.estimatedTokens || 0), 0);
-    const adapter = pc?.youtubeTranscript?.ok ? 'YouTube + DOM' : 'DOM';
-    els.contextChipLabel.textContent = `📎 ${adapter} · ${formatNumber(attachedChars)} chars · ~${formatNumber(attachedTokens)} tok`;
-    els.contextChip.title = currentContext.activeTab?.url || '';
-  }
+  const chip = contextChipSummary({ pageContext: pc, activeTab: currentContext.activeTab, parts: stats.parts });
+  els.contextChipLabel.textContent = chip.label;
+  els.contextChip.title = chip.title;
   els.contextPreview.textContent = [
     currentContext.activeTab?.title || '(unknown tab)',
     currentContext.activeTab?.url || '',
