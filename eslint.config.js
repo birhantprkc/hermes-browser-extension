@@ -1,0 +1,96 @@
+import js from '@eslint/js';
+
+export default [
+  js.configs.recommended,
+
+  {
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: {
+        // Browser extension APIs
+        chrome: 'readonly',
+        // Web standards
+        document: 'readonly',
+        window: 'readonly',
+        globalThis: 'readonly',
+        location: 'readonly',
+        navigator: 'readonly',
+        fetch: 'readonly',
+        Headers: 'readonly',
+        Request: 'readonly',
+        Response: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+        console: 'readonly',
+        performance: 'readonly',
+        URL: 'readonly',
+        URLSearchParams: 'readonly',
+        DOMParser: 'readonly',
+        MutationObserver: 'readonly',
+        AbortController: 'readonly',
+        AbortSignal: 'readonly',
+        TextEncoder: 'readonly',
+        TextDecoder: 'readonly',
+        Blob: 'readonly',
+        FileReader: 'readonly',
+        atob: 'readonly',
+        btoa: 'readonly',
+        structuredClone: 'readonly',
+        crypto: 'readonly',
+      },
+    },
+    rules: {
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', caughtErrors: 'none' }],
+      'no-console': 'off',
+      'no-var': 'error',
+      'prefer-const': 'warn',
+      'prefer-template': 'warn',
+      'no-throw-literal': 'warn',
+      'prefer-object-spread': 'warn',
+    },
+  },
+
+  {
+    files: ['scripts/**', 'tests/**', 'extension/lib/**'],
+    languageOptions: {
+      globals: {
+        // Node.js globals
+        process: 'readonly',
+        Buffer: 'readonly',
+        __dirname: 'readonly',
+        __filename: 'readonly',
+        require: 'readonly',
+        module: 'readonly',
+        exports: 'readonly',
+        console: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+        global: 'readonly',
+      },
+    },
+  },
+
+  {
+    files: ['scripts/**', 'tests/**'],
+    rules: {
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', caughtErrors: 'none', varsIgnorePattern: '^(assert|test)$' }],
+    },
+  },
+
+  {
+    ignores: [
+      'dist/',
+      'artifacts/',
+      'node_modules/',
+      '.hermes/',
+      'backups/',
+      'tmp/',
+      'docs/',
+    ],
+  },
+];
