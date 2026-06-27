@@ -157,6 +157,8 @@ test('v0.1.5 UI has compatibility, token hygiene, and What Hermes saw surfaces',
   assert.match(html, /id="connectionSecuritySummary"/);
   assert.match(html, /id="clearTokenButton"/);
   assert.match(html, /version loading/i);
+  assert.match(html, /API can use trusted LAN http; dashboard uses https/i);
+  assert.doesNotMatch(html, /Hermes on another machine, reached over https/);
   assert.doesNotMatch(html, /v0\.1\.3/);
   assert.match(js, /appendContextReceipt/);
   assert.match(js, /What Hermes saw/);

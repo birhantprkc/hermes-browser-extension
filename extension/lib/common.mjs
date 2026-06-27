@@ -146,7 +146,7 @@ export function gatewayConnectionSummary({ gatewayMode = DEFAULT_SETTINGS.gatewa
   if (mode.value === 'remote-dashboard') {
     setupHint = 'Remote dashboard over WebSocket. Sign in to it in a browser tab. No key needed. Add a key to use an API server instead.';
   } else if (mode.value === 'remote-api') {
-    setupHint = `Remote API server. Set API_SERVER_KEY and API_SERVER_CORS_ORIGINS=${corsOrigin} on the host. Clear the key to use the dashboard instead.`;
+    setupHint = `Remote API server. Set API_SERVER_ENABLED=true, API_SERVER_HOST=0.0.0.0, API_SERVER_KEY, and API_SERVER_CORS_ORIGINS=${corsOrigin} on the host. Same-LAN http://host:8642 is supported for trusted networks; use https:// for public/proxied hosts. Remote dashboard mode stays https/WebSocket and is selected when the key is blank.`;
   } else {
     setupHint = 'Local API server (default http://127.0.0.1:8642). Paste its key below.';
   }

@@ -127,7 +127,24 @@ API_SERVER_KEY=<your-api-server-key>
 API_SERVER_CORS_ORIGINS=chrome-extension://<your-extension-id>
 ```
 
-Use Tailscale/VPN/reverse proxy + HTTPS where possible. Do **not** expose the Hermes API server naked to the public internet. The Hermes API server can access the real Hermes runtime and tools.
+Use a private same-LAN/Tailscale/VPN host with HTTP, or put the API server behind a trusted HTTPS reverse proxy for public/proxied access. Do **not** expose the Hermes API server naked to the public internet. The Hermes API server can access the real Hermes runtime and tools.
+
+Examples:
+
+```text
+http://192.168.1.50:8642
+http://hermes-desktop.local:8642
+https://hermes.example.com
+```
+
+In the extension side panel:
+
+1. Choose **Remote gateway**.
+2. Paste the remote API URL, including `http://` or `https://`.
+3. Paste the API key/browser token.
+4. Click **Test connection**.
+
+With a key present, Remote means **Remote API server** and does not force HTTPS. With the key blank, Remote means **Remote dashboard WebSocket** and requires an `https://` dashboard URL.
 
 ### Remote dashboard mode, no API server
 
@@ -180,6 +197,18 @@ See [`SECURITY.md`](SECURITY.md), [`PERMISSIONS.md`](PERMISSIONS.md), [`DATA-FLO
 
 Make sure you loaded `dist/`, not the repo root. The selected folder must contain `manifest.json` directly.
 
+### Chrome still shows version `0.1.4` after updating
+
+The browser is still using an old unpacked folder or an unpacked extension card that was not reloaded. The shipped v0.1.5 source, built `dist/`, and release archive all contain `manifest.json` version `0.1.5`.
+
+Fix:
+
+1. Extract/download the v0.1.5 release or run `npm run build` locally.
+2. Open `chrome://extensions` or `edge://extensions`.
+3. On the Hermes Browser Extension card, click **Reload**.
+4. If it still says `0.1.4`, click **Remove**, then **Load unpacked** again and select the fresh v0.1.5 `dist/` folder.
+5. Click **service worker** / **Inspect views** only for debugging; it is not the version source.
+
 ### The side panel says it cannot connect
 
 Check that Hermes Gateway/API server is running and reachable from the browser:
@@ -191,6 +220,37 @@ curl http://<trusted-remote-host>:8642/health
 ```
 
 If `/v1/models` fails, check `API_SERVER_KEY`, the extension's stored API key/browser token, and `API_SERVER_CORS_ORIGINS`. For remote mode, the browser extension origin (`chrome-extension://<id>`) must be allowlisted on the Hermes machine.
+
+### Native Hermes computer use is not working
+
+Hermes Browser Extension does not request browser-control permissions and does not drive pages itself. Native desktop control comes from Hermes Agent's `computer_use` toolset via `cua-driver`.
+
+On the machine running Hermes, verify computer use directly:
+
+```bash
+hermes tools list
+hermes computer-use status
+hermes computer-use doctor
+```
+
+If `doctor` says the driver is missing:
+
+```bash
+hermes computer-use install
+```
+
+Then start a fresh Hermes session with the toolset enabled:
+
+```bash
+hermes -t computer_use chat
+```
+
+Common blockers from the Hermes docs:
+
+- Windows over SSH runs in Session 0 and cannot see the interactive desktop; use the console/RDP session or the cua-driver Windows autostart pattern.
+- Elevated/admin windows cannot be driven by a normal-integrity Hermes process on Windows.
+- macOS needs Accessibility + Screen Recording permissions.
+- Linux needs a reachable X11/Wayland display and AT-SPI.
 
 ### The DOM chip says `0 chars`
 

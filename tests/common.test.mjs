@@ -156,6 +156,15 @@ test('gateway settings support explicit local and remote Hermes API servers', ()
   assert.match(remote.setupHint, /API_SERVER_CORS_ORIGINS=chrome-extension:\/\/abc123/);
   assert.match(remote.setupHint, /API_SERVER_KEY/);
 
+  const lanRemote = gatewayConnectionSummary({
+    gatewayMode: 'remote-api',
+    gatewayUrl: 'http://192.168.1.50:8642/v1',
+    extensionOrigin: 'chrome-extension://abc123/',
+  });
+  assert.equal(lanRemote.normalizedUrl, 'http://192.168.1.50:8642');
+  assert.match(lanRemote.setupHint, /same-LAN http:\/\/host:8642/i);
+  assert.match(lanRemote.setupHint, /Remote dashboard.*https/i);
+
   const local = gatewayConnectionSummary({ gatewayMode: 'nonsense', gatewayUrl: '' });
   assert.equal(local.mode.value, 'local-api');
   assert.equal(local.normalizedUrl, 'http://127.0.0.1:8642');

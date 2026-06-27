@@ -8,7 +8,9 @@
 - Added token hygiene UI with masked token state, connection mode, last-tested timestamp, and one-click token clearing.
 - Added a collapsible “What Hermes saw” receipt after each sent turn so users can inspect tab/context/attachment/redaction payloads.
 - Gated image upload and profile APIs behind capabilities so missing routes become clear fallback warnings instead of broken UX.
-- Added public permissions, data-flow, and privacy docs for the current shipped extension behavior.
+- Added public permissions, data-flow, and privacy docs for shipped behavior.
+- Clarified remote API setup so same-LAN `http://host:8642` works in Remote gateway mode when an API key is present, while dashboard WebSocket mode remains HTTPS-only.
+- Documented how to reload/remove/reload unpacked when Chrome still shows an older extension version after update.
 
 ## v0.1.4 — 2026-06-26
 

@@ -16,7 +16,7 @@ In local mode, context is sent from the extension to the Hermes Gateway/API serv
 
 ### Remote Hermes API
 
-When you configure a remote `https://` Gateway URL and API key/browser token, context is sent to that remote Hermes API server. Use a trusted network path such as Tailscale/VPN/reverse proxy + HTTPS. Do not expose a Hermes API server naked to the public internet.
+When you configure a remote Gateway URL and API key/browser token, context is sent to that remote Hermes API server. Same-LAN or private VPN hosts can use `http://host:8642`; public/proxied hosts should use `https://`. Set `API_SERVER_ENABLED=true`, `API_SERVER_HOST=0.0.0.0`, `API_SERVER_KEY`, and a narrow `API_SERVER_CORS_ORIGINS=chrome-extension://<extension-id>` on the Hermes host. Do not expose a Hermes API server naked to the public internet.
 
 ### Remote dashboard WebSocket
 
