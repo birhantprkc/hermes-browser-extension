@@ -3969,15 +3969,15 @@ function bindEvents() {
     });
   });
 
-  // Wire overflow menu buttons (data-category / data-more)
-  document.querySelectorAll('[data-category], [data-more]').forEach((button) => {
-    button.addEventListener('click', (event) => {
-      const category = button.dataset.category || button.dataset.more || 'all';
+  // Wire overflow menu button (⋯) only
+  const moreBtn = document.querySelector('.quick-cmd-more');
+  if (moreBtn) {
+    moreBtn.addEventListener('click', (event) => {
       if (!els.quickMoreMenu) return;
       event.stopPropagation();
-      renderQuickMoreMenu(category);
+      renderQuickMoreMenu('all');
     });
-  });
+  }
 
   // Close overflow menu on outside click
   document.addEventListener('click', () => {
