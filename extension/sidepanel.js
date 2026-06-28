@@ -1850,7 +1850,7 @@ function renderTabPicker(filter = '') {
     const item = document.createElement('button');
     item.type = 'button';
     item.className = 'tab-picker-item';
-    const isSelected = selectedTabs === null || selectedTabs.some((t) => t.tabId === tab.tabId);
+    const isSelected = selectedTabs === null || selectedTabs.some((t) => t.id === tab.id);
     if (isSelected) item.classList.add('selected');
 
     const cb = document.createElement('span');
@@ -1870,16 +1870,16 @@ function renderTabPicker(filter = '') {
 
     info.append(title, url);
     item.append(cb, info);
-    item.dataset.tabId = String(tab.tabId);
+    item.dataset.tabId = String(tab.id);
 
     item.addEventListener('click', () => {
       if (selectedTabs === null) {
         // First toggle: start with all tabs selected, toggle this one off
-        selectedTabs = currentContext.tabs.filter((t) => t.tabId !== tab.tabId);
+        selectedTabs = currentContext.tabs.filter((t) => t.id !== tab.id);
       } else {
-        const exists = selectedTabs.some((t) => t.tabId === tab.tabId);
+        const exists = selectedTabs.some((t) => t.id === tab.id);
         selectedTabs = exists
-          ? selectedTabs.filter((t) => t.tabId !== tab.tabId)
+          ? selectedTabs.filter((t) => t.id !== tab.id)
           : [...selectedTabs, tab];
         // If all tabs are now selected, reset to null
         if (selectedTabs.length === tabs.length) selectedTabs = null;
