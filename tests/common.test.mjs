@@ -52,6 +52,8 @@ import {
   isDefaultBrowserSessionTitle,
   isNewerVersion,
   normalizeExtensionVersion,
+  normalizeGitCommit,
+  shortGitCommit,
 } from '../extension/lib/common.mjs';
 import {
   extractYouTubeVideoId,
@@ -557,20 +559,43 @@ test('version helpers compare extension update versions safely', () => {
   assert.equal(compareVersionStrings('0.10.0', '0.9.9'), 1);
   assert.equal(isNewerVersion('0.1.2', '0.1.1'), true);
   assert.equal(isNewerVersion('0.1.1', '0.1.1'), false);
+  assert.equal(normalizeGitCommit('F7C35B61A4E62C64FA1D36F6E88DF0CC343A2FEE'), 'f7c35b61a4e62c64fa1d36f6e88df0cc343a2fee');
+  assert.equal(normalizeGitCommit('not-a-sha'), '');
+  assert.equal(shortGitCommit('f7c35b61a4e62c64fa1d36f6e88df0cc343a2fee'), 'f7c35b6');
 });
 
-test('formatUpdateStatus reports same-version commits behind main', () => {
+test('formatUpdateStatus uses build commit alignment instead of release-tag distance', () => {
   assert.equal(
-    formatUpdateStatus({ latestVersion: '0.1.3', currentVersion: '0.1.3', commitsBehind: 5 }),
-    'v0.1.3 installed, v0.1.3 latest — but 5 unpulled commits. Pull latest, run npm run build, then reload the unpacked dist/ folder.',
+    formatUpdateStatus({
+      latestVersion: '0.1.6',
+      currentVersion: '0.1.6',
+      currentCommit: 'f7c35b61a4e62c64fa1d36f6e88df0cc343a2fee',
+      latestCommit: 'f7c35b61a4e62c64fa1d36f6e88df0cc343a2fee',
+      commitsBehind: 0,
+    }),
+    "You're up to date on v0.1.6 (main f7c35b6).",
   );
   assert.equal(
-    formatUpdateStatus({ latestVersion: '0.1.4', currentVersion: '0.1.3', commitsBehind: 12 }),
-    'Update available: v0.1.4. 12 commits behind. Pull latest, run npm run build, then reload the unpacked dist/ folder.',
+    formatUpdateStatus({
+      latestVersion: '0.1.6',
+      currentVersion: '0.1.6',
+      currentCommit: '7f52a2addddddddddddddddddddddddddddddddd',
+      latestCommit: 'f7c35b61a4e62c64fa1d36f6e88df0cc343a2fee',
+      commitsBehind: 3,
+    }),
+    'Source update available: v0.1.6 installed at 7f52a2a, main is f7c35b6 — 3 commits ahead. Pull latest, run npm run build, then reload the unpacked dist/ folder.',
   );
   assert.equal(
-    formatUpdateStatus({ latestVersion: '0.1.3', currentVersion: '0.1.3', commitsBehind: 0 }),
-    "You're up to date on v0.1.3.",
+    formatUpdateStatus({ latestVersion: '0.1.6', currentVersion: '0.1.6', commitsBehind: 3 }),
+    'v0.1.6 installed and v0.1.6 latest. Build commit is unknown, so commit alignment cannot be verified. Run npm run build, then reload the unpacked dist/ folder.',
+  );
+  assert.doesNotMatch(
+    formatUpdateStatus({ latestVersion: '0.1.6', currentVersion: '0.1.6', commitsBehind: 3 }),
+    /unpulled|behind/i,
+  );
+  assert.equal(
+    formatUpdateStatus({ latestVersion: '0.1.7', currentVersion: '0.1.6', commitsBehind: 12 }),
+    'Update available: v0.1.7. Pull latest, run npm run build, then reload the unpacked dist/ folder.',
   );
 });
 

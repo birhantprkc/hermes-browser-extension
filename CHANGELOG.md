@@ -6,6 +6,7 @@
 - Added a composer-header tab-context control so Hermes can follow the active tab or pin to a specific tab without adding extra lower composer chrome.
 - Isolated pinned-tab conversations with per-tab local message caches and per-tab Hermes session bindings.
 - Added selected-tab filtering for the open-tabs context list inside the same upward context card, including all/none controls.
+- Reworked unpacked-build update checks to compare the loaded build commit against GitHub main instead of mislabeling post-release commits as unpulled.
 - Added privacy redaction for sensitive tab titles/URLs before prompt assembly, including restricted active tabs and open-tab summaries.
 - Preserved contributor work from @iruzen-dono's quick-command and multi-tab context PRs, with follow-up hardening and tests.
 - Deferred the broad optional-host-permissions migration to a later release so v0.1.6 does not change the permission surface while shipping context-control improvements.

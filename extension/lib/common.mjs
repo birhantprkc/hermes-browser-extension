@@ -343,23 +343,63 @@ export function isNewerVersion(candidate = '0.0.0', current = '0.0.0') {
   return compareVersionStrings(candidate, current) > 0;
 }
 
-export function formatUpdateStatus({ latestVersion = '0.0.0', currentVersion = '0.0.0', commitsBehind = 0 } = {}) {
+export function normalizeGitCommit(value = '') {
+  const commit = String(value || '').trim().toLowerCase();
+  return /^[0-9a-f]{7,40}$/.test(commit) ? commit : '';
+}
+
+export function shortGitCommit(value = '') {
+  const commit = normalizeGitCommit(value);
+  return commit ? commit.slice(0, 7) : '';
+}
+
+function commitsWord(count = 0) {
+  return `${count} commit${count === 1 ? '' : 's'}`;
+}
+
+export function formatUpdateStatus({
+  latestVersion = '0.0.0',
+  currentVersion = '0.0.0',
+  currentCommit = '',
+  latestCommit = '',
+  commitsBehind = null,
+  buildDirty = false,
+} = {}) {
   const latest = String(latestVersion || '').trim().replace(/^v/i, '') || '0.0.0';
   const current = String(currentVersion || '').trim().replace(/^v/i, '') || '0.0.0';
-  const behind = Math.max(0, Number.parseInt(commitsBehind, 10) || 0);
+  const currentSha = normalizeGitCommit(currentCommit);
+  const latestSha = normalizeGitCommit(latestCommit);
+  const currentShort = shortGitCommit(currentSha);
+  const latestShort = shortGitCommit(latestSha);
+  const behind = Number.isFinite(Number(commitsBehind)) ? Math.max(0, Number.parseInt(commitsBehind, 10) || 0) : null;
   const versionComparison = compareVersionStrings(latest, current);
   const updateInstructions = 'Pull latest, run npm run build, then reload the unpacked dist/ folder.';
+  const rebuildInstructions = 'Run npm run build, then reload the unpacked dist/ folder.';
+  const dirtyNote = buildDirty ? ' Local source had uncommitted changes when this build was made.' : '';
+
   if (versionComparison > 0) {
-    const behindNote = behind ? ` ${behind} commit${behind === 1 ? '' : 's'} behind.` : '';
-    return `Update available: v${latest}.${behindNote} ${updateInstructions}`.replace(/\s+/g, ' ').trim();
+    const commitNote = behind && currentShort && latestShort
+      ? ` Main is ${commitsWord(behind)} ahead (${currentShort} → ${latestShort}).`
+      : '';
+    return `Update available: v${latest}.${commitNote} ${updateInstructions}`.replace(/\s+/g, ' ').trim();
   }
   if (versionComparison < 0) {
-    return `This build is ahead of main: v${current} installed, v${latest} on GitHub.`;
+    return `This build is ahead of the public package version: v${current} installed, v${latest} on GitHub.${dirtyNote}`.trim();
   }
-  if (behind > 0) {
-    return `v${current} installed, v${latest} latest — but ${behind} unpulled commit${behind === 1 ? '' : 's'}. ${updateInstructions}`;
+
+  if (currentSha && latestSha && currentSha === latestSha) {
+    return `You're up to date on v${current} (main ${currentShort}).${dirtyNote}`.trim();
   }
-  return `You're up to date on v${current}.`;
+  if (behind !== null && behind > 0 && currentShort && latestShort) {
+    return `Source update available: v${current} installed at ${currentShort}, main is ${latestShort} — ${commitsWord(behind)} ahead. ${updateInstructions}${dirtyNote}`.trim();
+  }
+  if (behind === 0 && currentShort && latestShort) {
+    return `You're up to date on v${current} (main ${latestShort}).${dirtyNote}`.trim();
+  }
+  if (!currentSha) {
+    return `v${current} installed and v${latest} latest. Build commit is unknown, so commit alignment cannot be verified. ${rebuildInstructions}`;
+  }
+  return `v${current} installed and v${latest} latest. Could not verify commit alignment against GitHub main. ${rebuildInstructions}${dirtyNote}`.trim();
 }
 
 export function connectionStateForGateway({

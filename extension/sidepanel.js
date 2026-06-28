@@ -28,6 +28,7 @@ import {
   microphonePermissionHelp,
   modelDisplayName,
   modelRuntimeStatus,
+  normalizeGitCommit,
   normalizeHermesModels,
   normalizeHermesProfiles,
   normalizeHermesSessions,
@@ -794,43 +795,73 @@ function applyGatewayMode(mode) {
   renderGatewayModeCards();
 }
 
-async function commitsBehindMainForVersion(latestVersion) {
-  const version = String(latestVersion || '').trim().replace(/^v/i, '');
-  if (!version) return 0;
-  const tag = `v${version}`;
-  try {
-    const cached = (await chrome.storage.local.get(UPDATE_CACHE_KEY))[UPDATE_CACHE_KEY];
-    if (cached?.tag === tag && Number.isFinite(cached.commitsBehind) && Date.now() - Number(cached.checkedAt || 0) < UPDATE_CACHE_TTL_MS) {
-      return Math.max(0, Number(cached.commitsBehind || 0));
+async function fetchJsonNoStore(url) {
+  const response = await fetch(`${url}${String(url).includes('?') ? '&' : '?'}t=${Date.now()}`, { cache: 'no-store' });
+  if (!response.ok) throw new Error(`Fetch failed (${response.status})`);
+  return response.json();
+}
+
+async function loadExtensionBuildInfo() {
+  const runtime = globalThis.chrome?.runtime;
+  const candidates = ['build-info.json', 'extension/build-info.json'];
+  for (const candidate of candidates) {
+    try {
+      const url = typeof runtime?.getURL === 'function' ? runtime.getURL(candidate) : candidate;
+      const payload = await fetchJsonNoStore(url);
+      const commit = normalizeGitCommit(payload?.commit);
+      if (commit || payload?.version) return { ...payload, commit };
+    } catch {
+      // Build metadata is generated for dist builds. Source-loaded dev copies may not have it.
     }
-  } catch {
-    // Cache is best-effort only.
   }
-  const response = await fetch(`${UPDATE_COMPARE_URL}/${encodeURIComponent(tag)}...main?t=${Date.now()}`, { cache: 'no-store' });
-  if (!response.ok) return 0;
+  return null;
+}
+
+async function fetchLatestUpdateInfo() {
+  const [packagePayload, commitPayload] = await Promise.all([
+    fetchJsonNoStore(UPDATE_PACKAGE_URL),
+    fetchJsonNoStore(UPDATE_MAIN_COMMIT_URL).catch(() => ({})),
+  ]);
+  const latestVersion = String(packagePayload.version || '').trim();
+  if (!latestVersion) throw new Error('Latest package version was missing.');
+  return {
+    latestVersion,
+    latestCommit: normalizeGitCommit(commitPayload?.sha),
+  };
+}
+
+async function commitsBehindMainForBuild(currentCommit = '', latestCommit = '') {
+  const currentSha = normalizeGitCommit(currentCommit);
+  const latestSha = normalizeGitCommit(latestCommit);
+  if (!currentSha) return null;
+  if (latestSha && currentSha === latestSha) return 0;
+  const head = latestSha || 'main';
+  const response = await fetch(`${UPDATE_COMPARE_URL}/${encodeURIComponent(currentSha)}...${encodeURIComponent(head)}?t=${Date.now()}`, { cache: 'no-store' });
+  if (!response.ok) return null;
   const payload = await response.json().catch(() => ({}));
-  const commitsBehind = Math.max(0, Number.parseInt(payload.ahead_by, 10) || 0);
-  try {
-    await chrome.storage.local.set({ [UPDATE_CACHE_KEY]: { tag, commitsBehind, checkedAt: Date.now() } });
-  } catch {
-    // Cache is best-effort only.
-  }
-  return commitsBehind;
+  return Math.max(0, Number.parseInt(payload.ahead_by, 10) || 0);
 }
 
 async function checkForUpdates() {
   if (!els.checkUpdatesButton) return;
   els.checkUpdatesButton.disabled = true;
   els.checkUpdatesButton.textContent = 'Checking...';
-  renderVersionInfo('Checking GitHub for the latest public version and commit count...');
+  renderVersionInfo('Checking GitHub main and this loaded build commit...');
   try {
-    const response = await fetch(`${UPDATE_PACKAGE_URL}?t=${Date.now()}`, { cache: 'no-store' });
-    if (!response.ok) throw new Error(`GitHub version check failed (${response.status})`);
-    const payload = await response.json();
-    const latest = String(payload.version || '').trim();
-    if (!latest) throw new Error('Latest package version was missing.');
-    const commitsBehind = await commitsBehindMainForVersion(latest);
-    renderVersionInfo(formatUpdateStatus({ latestVersion: latest, currentVersion: CURRENT_EXTENSION_VERSION, commitsBehind }));
+    const [buildInfo, latestInfo] = await Promise.all([
+      loadExtensionBuildInfo(),
+      fetchLatestUpdateInfo(),
+    ]);
+    const currentCommit = normalizeGitCommit(buildInfo?.commit);
+    const commitsBehind = await commitsBehindMainForBuild(currentCommit, latestInfo.latestCommit);
+    renderVersionInfo(formatUpdateStatus({
+      latestVersion: latestInfo.latestVersion,
+      currentVersion: CURRENT_EXTENSION_VERSION,
+      currentCommit,
+      latestCommit: latestInfo.latestCommit,
+      commitsBehind,
+      buildDirty: Boolean(buildInfo?.dirty),
+    }));
   } catch (error) {
     renderVersionInfo(`${error?.message || String(error)} Open ${REPO_URL} for manual update instructions.`);
   } finally {
@@ -1345,9 +1376,8 @@ const TEXT_ATTACHMENT_LIMIT = 12_000;
 const IMAGE_ATTACHMENT_TOKEN_ESTIMATE = 1_200;
 const BROWSER_IMAGE_UPLOAD_ENDPOINT = '/api/browser-extension/uploads/images';
 const UPDATE_PACKAGE_URL = 'https://raw.githubusercontent.com/abundantbeing/hermes-browser-extension/main/package.json';
+const UPDATE_MAIN_COMMIT_URL = 'https://api.github.com/repos/abundantbeing/hermes-browser-extension/commits/main';
 const UPDATE_COMPARE_URL = 'https://api.github.com/repos/abundantbeing/hermes-browser-extension/compare';
-const UPDATE_CACHE_KEY = 'hermesBrowserUpdateCheck';
-const UPDATE_CACHE_TTL_MS = 60 * 60 * 1000;
 const REPO_URL = 'https://github.com/abundantbeing/hermes-browser-extension';
 const runtimeManifest = globalThis.chrome?.runtime?.getManifest?.() || {};
 const CURRENT_EXTENSION_VERSION = normalizeExtensionVersion(runtimeManifest, els.versionLabel?.textContent);
