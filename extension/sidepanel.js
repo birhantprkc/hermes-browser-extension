@@ -68,9 +68,12 @@ import {
   parseAgentPortsInput,
 } from './lib/agent-discovery.mjs';
 import {
+  dashboardModelDiscoveryBaseUrl,
+  discoverModelsFromDashboard,
   discoverModelsFromRegistry,
   discoverModelsFromSessions,
   mergeModelsWithRegistry,
+  shouldTrySessionModelFallback,
 } from './lib/model-discovery.mjs';
 import {
   BUILTIN_COMMANDS,
@@ -2237,18 +2240,30 @@ async function loadModels({ quiet = false, payload = null, refresh = false } = {
     if (data) {
       registryModels = normalizeHermesModels(data, settings.model);
     } else {
-      const registryResult = await discoverModelsFromRegistry({ apiFetch, readJsonResponse, refresh });
-      if (registryResult.ok && registryResult.models.length) {
-        registryModels = normalizeHermesModels(registryResult.models, settings.model);
-        registrySource = 'registry';
+      const dashboardResult = await discoverModelsFromDashboard({
+        baseUrl: dashboardModelDiscoveryBaseUrl({
+          gatewayMode: settings.gatewayMode,
+          gatewayUrl: settings.gatewayUrl,
+        }),
+        refresh,
+      });
+      if (dashboardResult.ok && dashboardResult.models.length) {
+        registryModels = normalizeHermesModels(dashboardResult.models, settings.model);
+        registrySource = 'dashboard';
       } else {
-        const response = await apiFetch('/v1/models', { method: 'GET' });
-        data = await readJsonResponse(response);
-        if (!response.ok) throw new Error(data?.error?.message || data?.error || `Model list failed (${response.status})`);
-        registryModels = normalizeHermesModels(data, settings.model);
-        registrySource = 'v1';
-        if (!quiet && registryResult.error && registryResult.error !== 'status-404') {
-          setStatus('warn', 'Model registry unavailable', `Falling back to /v1/models (${registryResult.error}).`);
+        const registryResult = await discoverModelsFromRegistry({ apiFetch, readJsonResponse, refresh });
+        if (registryResult.ok && registryResult.models.length) {
+          registryModels = normalizeHermesModels(registryResult.models, settings.model);
+          registrySource = 'registry';
+        } else {
+          const response = await apiFetch('/v1/models', { method: 'GET' });
+          data = await readJsonResponse(response);
+          if (!response.ok) throw new Error(data?.error?.message || data?.error || `Model list failed (${response.status})`);
+          registryModels = normalizeHermesModels(data, settings.model);
+          registrySource = 'v1';
+          if (!quiet && registryResult.error && registryResult.error !== 'status-404') {
+            setStatus('warn', 'Model registry unavailable', `Falling back to /v1/models (${registryResult.error}).`);
+          }
         }
       }
     }
@@ -2256,8 +2271,11 @@ async function loadModels({ quiet = false, payload = null, refresh = false } = {
     // If the gateway only exposes a single OpenAI-compatible row, keep a
     // best-effort session-history fallback. The durable source is
     // /api/model/options; sessions are only for older API-server gateways.
-    const shouldTrySessionFallback = registryModels.length <= 1
-      && (registrySource === 'v1' || registryModels[0]?.id === DEFAULT_SETTINGS.model);
+    const shouldTrySessionFallback = shouldTrySessionModelFallback({
+      registryModels,
+      registrySource,
+      defaultModelId: DEFAULT_SETTINGS.model,
+    });
     if (shouldTrySessionFallback) {
       const sessionResult = await discoverModelsFromSessions({ apiFetch, readJsonResponse });
       if (sessionResult.ok && sessionResult.models.length) {
@@ -3012,7 +3030,23 @@ async function ensureDefaultBrowserSession({ focus = false } = {}) {
   await createHermesBrowserSession({ title: makeBrowserSessionTitle(), focus });
 }
 
+const THINKING_PLACEHOLDER = 'Thinking...';
+
+function renderThinkingIndicator(element) {
+  element.innerHTML = `
+    <span class="thinking-indicator" role="status" aria-live="polite" aria-label="Hermes is thinking">
+      <span class="thinking-glyph" aria-hidden="true"></span>
+      <span class="thinking-word">Thinking</span>
+      <span class="thinking-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+    </span>
+  `;
+}
+
 function renderMessageContentElement(element, content = '') {
+  if (String(content || '').trim() === THINKING_PLACEHOLDER) {
+    renderThinkingIndicator(element);
+    return;
+  }
   element.innerHTML = renderMarkdown(content || '');
 }
 
@@ -3075,7 +3109,7 @@ function createStreamingMessageUpdater(node) {
     if (frame) return;
     frame = requestAnimationFrame(() => {
       frame = 0;
-      setMessageContent(node, pending || 'Thinking...');
+      setMessageContent(node, pending || THINKING_PLACEHOLDER);
     });
   };
   return { update, flush };
@@ -4081,7 +4115,7 @@ async function askHermes(userText, turnAttachments = [...attachments]) {
     const receipt = buildContextReceipt({ context, attachments: preparedAttachments, settings });
     const { node: userNode } = addMessage('user', displayUserText);
     appendContextReceipt(userNode, receipt);
-    const { node } = addMessage('assistant', 'Thinking...', { persist: false });
+    const { node } = addMessage('assistant', THINKING_PLACEHOLDER, { persist: false });
     const streamView = createStreamingMessageUpdater(node);
     let answer = '';
     let liveText = '';
@@ -4090,7 +4124,7 @@ async function askHermes(userText, turnAttachments = [...attachments]) {
         prompt,
         (partial) => {
           liveText = partial || '';
-          streamView.update(liveText || 'Thinking...');
+          streamView.update(liveText || THINKING_PLACEHOLDER);
         },
         (tool) => streamView.update(`${liveText || 'Working...'}\n\n[tool] ${tool.tool_name || tool.tool || 'Hermes tool'} ${tool.preview || ''}`.trim()),
         {

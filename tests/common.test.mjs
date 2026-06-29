@@ -433,12 +433,27 @@ test('connect and startup sync Hermes models, sessions, skills, and profiles fro
   const source = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
   assert.match(source, /await loadModels\(\{ quiet: true \}\);\s*await loadSkills\(\{ quiet: true \}\);\s*await loadProfiles\(\{ quiet: true \}\);\s*await loadSessions\(\{ quiet: true \}\);\s*await ensureDefaultBrowserSession\(\{ focus: false \}\);/s);
   assert.match(source, /apiFetch\('\/v1\/models'/);
+  assert.match(source, /discoverModelsFromDashboard\(\{/);
+  assert.match(source, /dashboardModelDiscoveryBaseUrl\(\{/);
   assert.doesNotMatch(source, /loadModels\(\{ quiet: true, payload: modelsPayload \}\)/);
-  assert.match(source, /const shouldTrySessionFallback = registryModels\.length <= 1\s*&& \(registrySource === 'v1' \|\| registryModels\[0\]\?\.id === DEFAULT_SETTINGS\.model\);/);
+  assert.match(source, /shouldTrySessionModelFallback\(\{\s*registryModels,\s*registrySource,\s*defaultModelId: DEFAULT_SETTINGS\.model,\s*\}\)/s);
   assert.match(source, /apiFetch\('\/v1\/skills'/);
   assert.match(source, /apiFetch\('\/v1\/profiles'/);
   assert.match(source, /apiFetch\(`\/api\/sessions\?limit=\$\{limit\}&offset=\$\{offset\}&include_children=true&order=recent`/);
   assert.match(source, /els\.refreshModelsButton\.addEventListener\('click', \(\) => loadModels\(\{ refresh: true \}\)\)/);
+});
+
+test('assistant thinking placeholder renders animated indicator markup and reduced-motion CSS', () => {
+  const source = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../extension/sidepanel.css', import.meta.url), 'utf8');
+  assert.match(source, /const THINKING_PLACEHOLDER = 'Thinking\.\.\.'/);
+  assert.match(source, /function renderThinkingIndicator/);
+  assert.match(source, /class="thinking-indicator" role="status" aria-live="polite"/);
+  assert.match(source, /streamView\.update\(liveText \|\| THINKING_PLACEHOLDER\)/);
+  assert.match(css, /\.thinking-word[\s\S]*animation: thinkingWordGlow/);
+  assert.match(css, /@keyframes thinkingPulse/);
+  assert.match(css, /@keyframes thinkingUnderline/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
 });
 
 test('renderMarkdown produces safe rich text for headings, lists, tables, and links', () => {
@@ -807,6 +822,40 @@ test('discoverModelsFromRegistry flattens /api/model/options provider inventory'
   assert.equal(result.models[2].contextTokens, 1000000);
 });
 
+test('discoverModelsFromDashboard extracts the dashboard token and fetches model options', async () => {
+  const {
+    dashboardModelDiscoveryBaseUrl,
+    dashboardModelOptionsUrl,
+    discoverModelsFromDashboard,
+    extractDashboardSessionToken,
+  } = await import('../extension/lib/model-discovery.mjs');
+  assert.equal(dashboardModelDiscoveryBaseUrl({ gatewayMode: 'local-api' }), 'http://127.0.0.1:9119');
+  assert.equal(dashboardModelDiscoveryBaseUrl({ gatewayMode: 'remote-dashboard', gatewayUrl: 'https://dash.example' }), 'https://dash.example');
+  assert.equal(dashboardModelOptionsUrl('http://127.0.0.1:9119/', true), 'http://127.0.0.1:9119/api/model/options?refresh=true');
+  assert.equal(extractDashboardSessionToken('<script>window.__HERMES_SESSION_TOKEN__="abc123";</script>'), 'abc123');
+
+  const calls = [];
+  const fetchFn = async (url, options = {}) => {
+    calls.push({ url: String(url), method: options.method, token: options.headers?.['X-Hermes-Session-Token'] || '' });
+    if (String(url) === 'http://127.0.0.1:9119') {
+      return { ok: true, status: 200, text: async () => '<script>window.__HERMES_SESSION_TOKEN__="abc123";</script>' };
+    }
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        providers: [{ slug: 'nous', name: 'Nous Portal', authenticated: true, models: ['openai/gpt-5.5'] }],
+      }),
+    };
+  };
+
+  const result = await discoverModelsFromDashboard({ baseUrl: 'http://127.0.0.1:9119', fetchFn, refresh: true });
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls.map((call) => call.url), ['http://127.0.0.1:9119', 'http://127.0.0.1:9119/api/model/options?refresh=true']);
+  assert.equal(calls[1].token, 'abc123');
+  assert.deepEqual(result.models.map((model) => model.id), ['nous::openai/gpt-5.5']);
+});
+
 test('discoverModelsFromRegistry picks up context_length from capabilities when model entries are bare strings', async () => {
   const { discoverModelsFromRegistry } = await import('../extension/lib/model-discovery.mjs');
   const apiFetch = async () => ({ ok: true, status: 200 });
@@ -880,6 +929,23 @@ test('discoverModelsFromSessions extracts unique model names from /api/sessions'
   assert.equal(result.models[1].runtimeSelectable, false);
   assert.equal(isModelRuntimeSelectable(result.models[1]), false);
   assert.equal(modelRuntimeStatus(result.models[1]).label, 'observed');
+});
+
+test('selected fallback row does not block session model discovery', async () => {
+  const { shouldTrySessionModelFallback } = await import('../extension/lib/model-discovery.mjs');
+  const registryModels = normalizeHermesModels(
+    { data: [{ id: 'hermes-agent' }] },
+    'openai-codex:gpt-5.5'
+  );
+  assert.deepEqual(registryModels.map((model) => `${model.id}:${model.source || ''}`), [
+    'hermes-agent:',
+    'openai-codex:gpt-5.5:selected',
+  ]);
+  assert.equal(shouldTrySessionModelFallback({
+    registryModels,
+    registrySource: 'v1',
+    defaultModelId: 'hermes-agent',
+  }), true);
 });
 
 test('discoverModelsFromSessions returns ok=false with empty list on auth failure', async () => {

@@ -8,6 +8,7 @@
 // can reconstruct a useful model picker from session history.
 
 const SESSION_HISTORY_LIMIT = 100;
+const LOCAL_DASHBOARD_URL = 'http://127.0.0.1:9119';
 
 const KNOWN_PROVIDER_PREFIXES = [
   // Order matters: most specific first.
@@ -51,6 +52,50 @@ export function deriveProviderFromModelId(modelId = '') {
   return '';
 }
 
+export function modelsFromModelOptionsPayload(payload = {}) {
+  const providers = Array.isArray(payload?.providers) ? payload.providers : [];
+  const models = [];
+  const seen = new Set();
+  for (const provider of providers) {
+    const slug = String(provider?.slug || provider?.id || provider?.provider || '').trim();
+    const providerLabel = String(provider?.name || provider?.label || slug || 'Hermes').trim();
+    const entries = Array.isArray(provider?.models) ? provider.models : [];
+    const caps = provider?.capabilities && typeof provider.capabilities === 'object' ? provider.capabilities : {};
+    const unavailable = new Set(Array.isArray(provider?.unavailable_models) ? provider.unavailable_models : []);
+    for (const entry of entries) {
+      const modelId = String(
+        typeof entry === 'string'
+          ? entry
+          : entry?.id || entry?.name || entry?.model || ''
+      ).trim();
+      if (!modelId) continue;
+      const dedupeKey = `${slug || deriveProviderFromModelId(modelId) || providerLabel}::${modelId}`.toLowerCase();
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      const modelCaps = caps[modelId] || {};
+      const uiId = slug ? `${slug}::${modelId}` : modelId;
+      const entryContext = Number(entry?.context_length || entry?.contextTokens || 0) || 0;
+      const capsContext = Number(modelCaps?.context_length || 0) || 0;
+      models.push({
+        id: uiId,
+        rawModelId: modelId,
+        label: typeof entry === 'object' ? (entry.label || entry.name || modelId) : modelId,
+        provider: slug || deriveProviderFromModelId(modelId),
+        providerLabel,
+        description: provider?.warning || provider?.source || '',
+        contextTokens: entryContext || capsContext || 0,
+        fast: typeof modelCaps.fast === 'boolean' ? modelCaps.fast : undefined,
+        reasoning: typeof modelCaps.reasoning === 'boolean' ? modelCaps.reasoning : undefined,
+        authenticated: provider?.authenticated !== false,
+        available: !unavailable.has(modelId),
+        source: 'registry',
+        runtimeSelectable: true,
+      });
+    }
+  }
+  return models;
+}
+
 export async function discoverModelsFromRegistry({
   apiFetch,
   readJsonResponse,
@@ -70,49 +115,94 @@ export async function discoverModelsFromRegistry({
         models: [],
       };
     }
-    const providers = Array.isArray(payload?.providers) ? payload.providers : [];
-    const models = [];
-    const seen = new Set();
-    for (const provider of providers) {
-      const slug = String(provider?.slug || provider?.id || provider?.provider || '').trim();
-      const providerLabel = String(provider?.name || provider?.label || slug || 'Hermes').trim();
-      const entries = Array.isArray(provider?.models) ? provider.models : [];
-      const caps = provider?.capabilities && typeof provider.capabilities === 'object' ? provider.capabilities : {};
-      const unavailable = new Set(Array.isArray(provider?.unavailable_models) ? provider.unavailable_models : []);
-      for (const entry of entries) {
-        const modelId = String(
-          typeof entry === 'string'
-            ? entry
-            : entry?.id || entry?.name || entry?.model || ''
-        ).trim();
-        if (!modelId) continue;
-        const dedupeKey = `${slug || deriveProviderFromModelId(modelId) || providerLabel}::${modelId}`.toLowerCase();
-        if (seen.has(dedupeKey)) continue;
-        seen.add(dedupeKey);
-        const modelCaps = caps[modelId] || {};
-        const uiId = slug ? `${slug}::${modelId}` : modelId;
-        const entryContext = Number(entry?.context_length || entry?.contextTokens || 0) || 0;
-        const capsContext = Number(modelCaps?.context_length || 0) || 0;
-        models.push({
-          id: uiId,
-          rawModelId: modelId,
-          label: typeof entry === 'object' ? (entry.label || entry.name || modelId) : modelId,
-          provider: slug || deriveProviderFromModelId(modelId),
-          providerLabel,
-          description: provider?.warning || provider?.source || '',
-          contextTokens: entryContext || capsContext || 0,
-          fast: typeof modelCaps.fast === 'boolean' ? modelCaps.fast : undefined,
-          reasoning: typeof modelCaps.reasoning === 'boolean' ? modelCaps.reasoning : undefined,
-          authenticated: provider?.authenticated !== false,
-          available: !unavailable.has(modelId),
-          source: 'registry',
-          runtimeSelectable: true,
-        });
-      }
-    }
-    return { ok: true, models, error: '' };
+    return { ok: true, models: modelsFromModelOptionsPayload(payload), error: '' };
   } catch (error) {
     return { ok: false, error: error?.message || 'error', models: [] };
+  }
+}
+
+async function fetchWithTimeout(fetchFn, url, options = {}, timeoutMs = 5000) {
+  if (typeof fetchFn !== 'function') throw new Error('no-fetch');
+  if (typeof AbortController === 'undefined' || !timeoutMs) {
+    return fetchFn(url, options);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetchFn(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function dashboardModelDiscoveryBaseUrl({ gatewayMode = 'local-api', gatewayUrl = '', localDashboardUrl = LOCAL_DASHBOARD_URL } = {}) {
+  if (gatewayMode === 'local-api') return localDashboardUrl;
+  if (gatewayMode === 'remote-dashboard') return String(gatewayUrl || '').trim();
+  return '';
+}
+
+export function extractDashboardSessionToken(html = '') {
+  const match = String(html || '').match(/window\.__HERMES_SESSION_TOKEN__\s*=\s*"([^"]+)"/);
+  return match?.[1] || '';
+}
+
+export function dashboardModelOptionsUrl(baseUrl = '', refresh = false) {
+  try {
+    const url = new URL(String(baseUrl || '').trim());
+    url.hash = '';
+    url.search = refresh ? '?refresh=true' : '';
+    url.pathname = `${url.pathname.replace(/\/+$/, '')}/api/model/options`;
+    return url.toString();
+  } catch {
+    const suffix = refresh ? '?refresh=true' : '';
+    return `${String(baseUrl || '').replace(/\/+$/, '')}/api/model/options${suffix}`;
+  }
+}
+
+export async function discoverModelsFromDashboard({
+  baseUrl = LOCAL_DASHBOARD_URL,
+  fetchFn = globalThis.fetch?.bind(globalThis),
+  refresh = false,
+  rootTimeoutMs = 2500,
+  optionsTimeoutMs = refresh ? 18000 : 6000,
+} = {}) {
+  const dashboardUrl = String(baseUrl || '').trim();
+  if (!dashboardUrl) return { ok: false, error: 'no-dashboard-url', models: [] };
+  try {
+    const rootResponse = await fetchWithTimeout(fetchFn, dashboardUrl, {
+      method: 'GET',
+      headers: { Accept: 'text/html' },
+      credentials: 'include',
+    }, rootTimeoutMs);
+    if (!rootResponse.ok) return { ok: false, error: `dashboard-root-${rootResponse.status}`, models: [] };
+    const html = await rootResponse.text();
+    const token = extractDashboardSessionToken(html);
+    if (!token) return { ok: false, error: 'no-dashboard-session-token', models: [] };
+    const optionsResponse = await fetchWithTimeout(fetchFn, dashboardModelOptionsUrl(dashboardUrl, refresh), {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        'X-Hermes-Session-Token': token,
+      },
+      credentials: 'include',
+    }, optionsTimeoutMs);
+    const text = await optionsResponse.text();
+    let payload = null;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = { error: text.slice(0, 500) };
+    }
+    if (!optionsResponse.ok) {
+      return {
+        ok: false,
+        error: payload?.detail || payload?.error?.message || payload?.error || `dashboard-options-${optionsResponse.status}`,
+        models: [],
+      };
+    }
+    return { ok: true, models: modelsFromModelOptionsPayload(payload), error: '', source: 'dashboard' };
+  } catch (error) {
+    return { ok: false, error: error?.name === 'AbortError' ? 'dashboard-timeout' : (error?.message || 'error'), models: [] };
   }
 }
 
@@ -174,6 +264,14 @@ export async function discoverModelsFromSessions({
   } catch (error) {
     return { ok: false, error: error?.message || 'error', models: [] };
   }
+}
+
+export function shouldTrySessionModelFallback({ registryModels = [], registrySource = '', defaultModelId = 'hermes-agent' } = {}) {
+  const advertisedModels = registryModels.filter((model) => model?.source !== 'selected');
+  const hasOnlyOneAdvertisedModel = advertisedModels.length <= 1;
+  const includesDefaultAlias = advertisedModels.some((model) => model?.id === defaultModelId)
+    || registryModels.some((model) => model?.id === defaultModelId);
+  return hasOnlyOneAdvertisedModel && (registrySource === 'v1' || includesDefaultAlias);
 }
 
 export function mergeModelsWithRegistry({ registryModels = [], sessionModels = [] } = {}) {
