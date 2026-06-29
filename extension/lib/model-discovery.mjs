@@ -146,15 +146,22 @@ export function extractDashboardSessionToken(html = '') {
   return match?.[1] || '';
 }
 
-export function dashboardModelOptionsUrl(baseUrl = '', refresh = false) {
+export function dashboardModelOptionsUrl(baseUrl = '', refresh = false, profile = '') {
   try {
     const url = new URL(String(baseUrl || '').trim());
     url.hash = '';
-    url.search = refresh ? '?refresh=true' : '';
+    url.search = '';
+    if (refresh) url.searchParams.set('refresh', 'true');
+    const profileName = String(profile || '').trim();
+    if (profileName) url.searchParams.set('profile', profileName);
     url.pathname = `${url.pathname.replace(/\/+$/, '')}/api/model/options`;
     return url.toString();
   } catch {
-    const suffix = refresh ? '?refresh=true' : '';
+    const params = new URLSearchParams();
+    if (refresh) params.set('refresh', 'true');
+    const profileName = String(profile || '').trim();
+    if (profileName) params.set('profile', profileName);
+    const suffix = params.toString() ? `?${params.toString()}` : '';
     return `${String(baseUrl || '').replace(/\/+$/, '')}/api/model/options${suffix}`;
   }
 }
@@ -163,6 +170,7 @@ export async function discoverModelsFromDashboard({
   baseUrl = LOCAL_DASHBOARD_URL,
   fetchFn = globalThis.fetch?.bind(globalThis),
   refresh = false,
+  profile = '',
   rootTimeoutMs = 2500,
   optionsTimeoutMs = refresh ? 18000 : 6000,
 } = {}) {
@@ -178,7 +186,7 @@ export async function discoverModelsFromDashboard({
     const html = await rootResponse.text();
     const token = extractDashboardSessionToken(html);
     if (!token) return { ok: false, error: 'no-dashboard-session-token', models: [] };
-    const optionsResponse = await fetchWithTimeout(fetchFn, dashboardModelOptionsUrl(dashboardUrl, refresh), {
+    const optionsResponse = await fetchWithTimeout(fetchFn, dashboardModelOptionsUrl(dashboardUrl, refresh, profile), {
       method: 'GET',
       headers: {
         Accept: 'application/json',
@@ -268,10 +276,17 @@ export async function discoverModelsFromSessions({
 
 export function shouldTrySessionModelFallback({ registryModels = [], registrySource = '', defaultModelId = 'hermes-agent' } = {}) {
   const advertisedModels = registryModels.filter((model) => model?.source !== 'selected');
-  const hasOnlyOneAdvertisedModel = advertisedModels.length <= 1;
   const includesDefaultAlias = advertisedModels.some((model) => model?.id === defaultModelId)
     || registryModels.some((model) => model?.id === defaultModelId);
-  return hasOnlyOneAdvertisedModel && (registrySource === 'v1' || includesDefaultAlias);
+  if (registrySource === 'v1') {
+    // API-server /v1/models may expose only the active OpenAI-compatible row,
+    // or that row plus the default hermes-agent alias. Both are sparse and
+    // should keep searching session history rather than freezing the picker at
+    // one provider.
+    return advertisedModels.length <= 2;
+  }
+  const nonDefaultAdvertised = advertisedModels.filter((model) => model?.id !== defaultModelId);
+  return includesDefaultAlias && nonDefaultAdvertised.length <= 1;
 }
 
 export function mergeModelsWithRegistry({ registryModels = [], sessionModels = [] } = {}) {

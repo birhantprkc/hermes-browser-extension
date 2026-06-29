@@ -2246,6 +2246,7 @@ async function loadModels({ quiet = false, payload = null, refresh = false } = {
           gatewayUrl: settings.gatewayUrl,
         }),
         refresh,
+        profile: settings.activeProfile,
       });
       if (dashboardResult.ok && dashboardResult.models.length) {
         registryModels = normalizeHermesModels(dashboardResult.models, settings.model);

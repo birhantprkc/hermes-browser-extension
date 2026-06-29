@@ -434,6 +434,7 @@ test('connect and startup sync Hermes models, sessions, skills, and profiles fro
   assert.match(source, /await loadModels\(\{ quiet: true \}\);\s*await loadSkills\(\{ quiet: true \}\);\s*await loadProfiles\(\{ quiet: true \}\);\s*await loadSessions\(\{ quiet: true \}\);\s*await ensureDefaultBrowserSession\(\{ focus: false \}\);/s);
   assert.match(source, /apiFetch\('\/v1\/models'/);
   assert.match(source, /discoverModelsFromDashboard\(\{/);
+  assert.match(source, /profile: settings\.activeProfile/);
   assert.match(source, /dashboardModelDiscoveryBaseUrl\(\{/);
   assert.doesNotMatch(source, /loadModels\(\{ quiet: true, payload: modelsPayload \}\)/);
   assert.match(source, /shouldTrySessionModelFallback\(\{\s*registryModels,\s*registrySource,\s*defaultModelId: DEFAULT_SETTINGS\.model,\s*\}\)/s);
@@ -832,6 +833,7 @@ test('discoverModelsFromDashboard extracts the dashboard token and fetches model
   assert.equal(dashboardModelDiscoveryBaseUrl({ gatewayMode: 'local-api' }), 'http://127.0.0.1:9119');
   assert.equal(dashboardModelDiscoveryBaseUrl({ gatewayMode: 'remote-dashboard', gatewayUrl: 'https://dash.example' }), 'https://dash.example');
   assert.equal(dashboardModelOptionsUrl('http://127.0.0.1:9119/', true), 'http://127.0.0.1:9119/api/model/options?refresh=true');
+  assert.equal(dashboardModelOptionsUrl('http://127.0.0.1:9119/', true, 'worker_beta'), 'http://127.0.0.1:9119/api/model/options?refresh=true&profile=worker_beta');
   assert.equal(extractDashboardSessionToken('<script>window.__HERMES_SESSION_TOKEN__="abc123";</script>'), 'abc123');
 
   const calls = [];
@@ -849,9 +851,9 @@ test('discoverModelsFromDashboard extracts the dashboard token and fetches model
     };
   };
 
-  const result = await discoverModelsFromDashboard({ baseUrl: 'http://127.0.0.1:9119', fetchFn, refresh: true });
+  const result = await discoverModelsFromDashboard({ baseUrl: 'http://127.0.0.1:9119', fetchFn, refresh: true, profile: 'worker_beta' });
   assert.equal(result.ok, true);
-  assert.deepEqual(calls.map((call) => call.url), ['http://127.0.0.1:9119', 'http://127.0.0.1:9119/api/model/options?refresh=true']);
+  assert.deepEqual(calls.map((call) => call.url), ['http://127.0.0.1:9119', 'http://127.0.0.1:9119/api/model/options?refresh=true&profile=worker_beta']);
   assert.equal(calls[1].token, 'abc123');
   assert.deepEqual(result.models.map((model) => model.id), ['nous::openai/gpt-5.5']);
 });
@@ -933,19 +935,40 @@ test('discoverModelsFromSessions extracts unique model names from /api/sessions'
 
 test('selected fallback row does not block session model discovery', async () => {
   const { shouldTrySessionModelFallback } = await import('../extension/lib/model-discovery.mjs');
-  const registryModels = normalizeHermesModels(
+  const defaultOnly = normalizeHermesModels(
     { data: [{ id: 'hermes-agent' }] },
     'openai-codex:gpt-5.5'
   );
-  assert.deepEqual(registryModels.map((model) => `${model.id}:${model.source || ''}`), [
+  assert.deepEqual(defaultOnly.map((model) => `${model.id}:${model.source || ''}`), [
     'hermes-agent:',
     'openai-codex:gpt-5.5:selected',
   ]);
   assert.equal(shouldTrySessionModelFallback({
-    registryModels,
+    registryModels: defaultOnly,
     registrySource: 'v1',
     defaultModelId: 'hermes-agent',
   }), true);
+
+  const defaultPlusSelected = normalizeHermesModels(
+    { data: [{ id: 'hermes-agent' }, { id: 'openai-codex:gpt-5.5' }] },
+    'openai-codex:gpt-5.5'
+  );
+  assert.deepEqual(defaultPlusSelected.map((model) => model.id), ['hermes-agent', 'openai-codex:gpt-5.5']);
+  assert.equal(shouldTrySessionModelFallback({
+    registryModels: defaultPlusSelected,
+    registrySource: 'v1',
+    defaultModelId: 'hermes-agent',
+  }), true);
+
+  const realCatalog = normalizeHermesModels(
+    { data: [{ id: 'gpt-5.5' }, { id: 'claude-opus-4.8' }, { id: 'MiniMax-M3' }] },
+    'gpt-5.5'
+  );
+  assert.equal(shouldTrySessionModelFallback({
+    registryModels: realCatalog,
+    registrySource: 'v1',
+    defaultModelId: 'hermes-agent',
+  }), false);
 });
 
 test('discoverModelsFromSessions returns ok=false with empty list on auth failure', async () => {
