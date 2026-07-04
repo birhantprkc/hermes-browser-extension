@@ -289,6 +289,27 @@ export function shouldTrySessionModelFallback({ registryModels = [], registrySou
   return includesDefaultAlias && nonDefaultAdvertised.length <= 1;
 }
 
+export function modelCatalogRefreshDecision({ previousSelectedModel = '', discoveredModels = [], refresh = false } = {}) {
+  const models = Array.isArray(discoveredModels) ? discoveredModels : [];
+  const fallbackIds = new Set(['hermes-agent', 'nous']);
+  const onlyFallback = models.length > 0 && models.every((model) => {
+    const id = String(model?.id || model?.name || model?.label || '').trim().toLowerCase();
+    return fallbackIds.has(id);
+  });
+  if (refresh && previousSelectedModel && onlyFallback) {
+    return {
+      keepPreviousSelection: true,
+      selectedModel: previousSelectedModel,
+      warning: 'fallback-only',
+    };
+  }
+  return {
+    keepPreviousSelection: false,
+    selectedModel: models[0]?.id || previousSelectedModel,
+    warning: '',
+  };
+}
+
 export function mergeModelsWithRegistry({ registryModels = [], sessionModels = [] } = {}) {
   const out = [];
   const seen = new Set();

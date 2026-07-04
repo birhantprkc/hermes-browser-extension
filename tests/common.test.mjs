@@ -15,6 +15,8 @@ import {
   busyComposerSubmitAction,
   clampText,
   classifyGatewayError,
+  composerKeyAction,
+  contextAccountingSnapshot,
   collectReadablePageText,
   composerControlState,
   contextChipSummary,
@@ -41,6 +43,7 @@ import {
   normalizeHermesSessions,
   normalizeHermesSkills,
   normalizeFastMode,
+  normalizeSessionStartupMode,
   pairingFailureMessage,
   privacySafeTabForPrompt,
   queuedMessageControlState,
@@ -54,6 +57,7 @@ import {
   shouldSubmitComposerKey,
   shouldAutoOpenSessionGroup,
   shouldAutoFlushQueuedTurn,
+  shouldCreateFreshSessionOnOpen,
   summarizeTabs,
   compareVersionStrings,
   autoSessionTitleFromText,
@@ -82,6 +86,23 @@ import {
   sessionBindingKeyForScope,
   tabScopeId,
 } from '../extension/lib/context-scope.mjs';
+
+test('session startup mode defaults to fresh panel-open sessions', () => {
+  assert.equal(DEFAULT_SETTINGS.sessionStartupMode, 'new-session');
+  assert.equal(normalizeSessionStartupMode(undefined), 'new-session');
+  assert.equal(normalizeSessionStartupMode('resume-last'), 'resume-last');
+  assert.equal(normalizeSessionStartupMode('bogus'), 'new-session');
+  assert.equal(shouldCreateFreshSessionOnOpen({ sessionStartupMode: 'new-session' }), true);
+  assert.equal(shouldCreateFreshSessionOnOpen({ sessionStartupMode: 'resume-last' }), false);
+});
+
+test('sidepanel startup initializes a fresh panel-open session instead of auto-resuming active scope', () => {
+  const source = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
+  assert.match(source, /async function loadSettings\(\{ restoreMessages = false \} = \{\}\)/);
+  assert.match(source, /await loadSettings\(\{ restoreMessages: false \}\)/);
+  assert.match(source, /initializeSessionForPanelOpen\(\{ focus: false \}\)/);
+  assert.doesNotMatch(source, /await ensureSessionForActiveScope\(\{ focus: false \}\);\s*await consumePendingVoiceDraft/);
+});
 
 test('side panel defaults to full Hermes tool access instead of read-only/no-tool mode', () => {
   const source = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
@@ -509,6 +530,16 @@ test('queued message controls allow delete anytime and steer only when runnable 
   assert.equal(queuedMessageControlState({ sending: true, text: '   ' }).delete.disabled, false);
 });
 
+test('composer key action distinguishes normal submit from explicit active-run steer shortcut', () => {
+  assert.equal(composerKeyAction({ key: 'Enter' }, { sending: false, draftText: 'normal turn' }), 'submit');
+  assert.equal(composerKeyAction({ key: 'Enter', shiftKey: true }, { sending: false, draftText: 'line break' }), 'none');
+  assert.equal(composerKeyAction({ key: 'Enter', isComposing: true }, { sending: false, draftText: 'compose' }), 'none');
+  assert.equal(composerKeyAction({ key: 'Enter', ctrlKey: true }, { sending: true, draftText: 'tighten this', canSteer: true }), 'steer');
+  assert.equal(composerKeyAction({ key: 'Enter', metaKey: true }, { sending: true, draftText: 'tighten this', canSteer: true }), 'steer');
+  assert.equal(composerKeyAction({ key: 'Enter', ctrlKey: true }, { sending: true, draftText: '', attachmentCount: 1, canSteer: true }), 'queue');
+  assert.equal(shouldSubmitComposerKey({ key: 'Enter', ctrlKey: true }), true);
+});
+
 test('composer submit steers active text by default while preserving explicit queue fallback', () => {
   assert.equal(busyComposerSubmitAction({ sending: true, draftText: 'tighten this now', canSteer: true }), 'steer');
   assert.equal(busyComposerSubmitAction({ sending: true, draftText: 'send later', canSteer: false }), 'queue');
@@ -619,7 +650,7 @@ test('sidepanel falls back to visible voice dictation tab when sidepanel microph
 
 test('connect and startup sync Hermes models, sessions, skills, and profiles from the gateway', () => {
   const source = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
-  assert.match(source, /await loadModels\(\{ quiet: true \}\);\s*await loadSkills\(\{ quiet: true \}\);\s*await loadProfiles\(\{ quiet: true \}\);\s*await loadSessions\(\{ quiet: true \}\);\s*await ensureDefaultBrowserSession\(\{ focus: false \}\);/s);
+  assert.match(source, /await loadModels\(\{ quiet: true \}\);\s*await loadSkills\(\{ quiet: true \}\);\s*await loadProfiles\(\{ quiet: true \}\);\s*await loadSessions\(\{ quiet: true \}\);\s*await initializeSessionForPanelOpen\(\{ focus: false \}\);/s);
   assert.match(source, /apiFetch\('\/v1\/models'/);
   assert.ok(
     source.indexOf('discoverModelsFromRegistry({ apiFetch, readJsonResponse, refresh })') > -1
@@ -1219,6 +1250,42 @@ test('YouTube transcript helpers parse ids, providers, timedtext, and prompt tex
   assert.match(formatYoutubeTranscript(transcript), /\[0:01\] hello & world/);
 });
 
+test('context accounting uses runtime prompt tokens for context bar instead of cumulative spend', () => {
+  const result = contextAccountingSnapshot({
+    localPromptTokens: 120,
+    draftTokens: 0,
+    runtime: {
+      context_length: 1_000_000,
+      last_prompt_tokens: 50_000,
+    },
+    usage: {
+      total_tokens: 3_600_000,
+      prompt_tokens: 50_000,
+      completion_tokens: 900,
+    },
+  });
+
+  assert.equal(result.liveContextTokens, 50_000);
+  assert.equal(result.contextLimitTokens, 1_000_000);
+  assert.equal(result.lastTurnSpendTokens, 3_600_000);
+  assert.equal(result.nextPromptTokens, 120);
+  assert.equal(result.source, 'runtime');
+});
+
+test('context accounting falls back to local prompt estimate when runtime prompt tokens are missing', () => {
+  const result = contextAccountingSnapshot({
+    localPromptTokens: 320,
+    draftTokens: 40,
+    runtime: { context_length: 272_000 },
+    usage: { total_tokens: 900_000 },
+  });
+
+  assert.equal(result.liveContextTokens, 360);
+  assert.equal(result.contextLimitTokens, 272_000);
+  assert.equal(result.lastTurnSpendTokens, 900_000);
+  assert.equal(result.source, 'local-estimate');
+});
+
 test('OpenAI stream chunks append deltas and preserve final message payloads', () => {
   let text = appendOpenAiChunkText({ json: { choices: [{ delta: { content: 'Hel' } }] } }, '');
   text = appendOpenAiChunkText({ json: { choices: [{ delta: { content: 'lo' } }] } }, text);
@@ -1470,6 +1537,19 @@ test('deriveProviderFromModelId handles the common providers we know about', asy
   assert.equal(deriveProviderFromModelId('glm-5.2'), 'zhipu');
   assert.equal(deriveProviderFromModelId('mystery-model-2026'), '');
   assert.equal(deriveProviderFromModelId(''), '');
+});
+
+test('limited model refresh keeps explicit previous model selection', async () => {
+  const { modelCatalogRefreshDecision } = await import('../extension/lib/model-discovery.mjs');
+  const result = modelCatalogRefreshDecision({
+    previousSelectedModel: 'local-provider::local-model',
+    discoveredModels: [{ id: 'hermes-agent', name: 'Hermes Agent' }],
+    refresh: true,
+  });
+
+  assert.equal(result.keepPreviousSelection, true);
+  assert.equal(result.selectedModel, 'local-provider::local-model');
+  assert.equal(result.warning, 'fallback-only');
 });
 
 test('mergeModelsWithRegistry puts registry first, sessions second, dedupes', async () => {

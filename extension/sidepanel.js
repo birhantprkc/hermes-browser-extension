@@ -12,7 +12,9 @@ import {
   clampText,
   classifyGatewayError,
   composerControlState,
+  composerKeyAction,
   connectionStateForGateway,
+  contextAccountingSnapshot,
   contextChipSummary,
   encodeSessionId,
   estimateContextWindow,
@@ -43,6 +45,7 @@ import {
   normalizeFastMode,
   normalizeGatewayMode,
   normalizeGatewayUrl,
+  normalizeSessionStartupMode,
   normalizeToolActivity,
   normalizeReasoningEffort,
   pairingFailureMessage,
@@ -52,9 +55,9 @@ import {
   safeTab,
   shouldStopSessionPaging,
   shouldFallbackToWebSpeechForTranscription,
-  shouldSubmitComposerKey,
   shouldAutoOpenSessionGroup,
   shouldAutoFlushQueuedTurn,
+  shouldCreateFreshSessionOnOpen,
   skillSuggestionsForInput,
 } from './lib/common.mjs';
 import { extractYouTubeVideoId } from './lib/transcript.mjs';
@@ -81,6 +84,7 @@ import {
   discoverModelsFromRegistry,
   discoverModelsFromSessions,
   mergeModelsWithRegistry,
+  modelCatalogRefreshDecision,
   shouldTrySessionModelFallback,
 } from './lib/model-discovery.mjs';
 import {
@@ -246,6 +250,10 @@ let sessionRoutesAvailable = null;
 let activeSessionRuntime = {
   sessionId: '',
   usedTokens: 0,
+  liveContextTokens: 0,
+  nextPromptTokens: 0,
+  lastTurnSpendTokens: 0,
+  sessionSpendTokens: 0,
   inputTokens: 0,
   outputTokens: 0,
   contextTokens: 0,
@@ -834,6 +842,9 @@ function makePinnedTabSessionTitle(tab = {}) {
   return `${prefix}${title}`;
 }
 
+// Used for explicit scope changes inside an already-open panel. Startup uses
+// initializeSessionForPanelOpen() so opening the extension does not silently
+// resume a previous Browser session.
 async function ensureSessionForActiveScope({ focus = false } = {}) {
   if (previousConversationScope.mode !== CONTEXT_SCOPE_MODES.PINNED_TAB) {
     await ensureDefaultBrowserSession({ focus });
@@ -851,6 +862,16 @@ async function ensureSessionForActiveScope({ focus = false } = {}) {
     return;
   }
   await createHermesBrowserSession({ title: makePinnedTabSessionTitle(currentContext.activeTab || previousConversationScope), focus });
+}
+
+async function initializeSessionForPanelOpen({ focus = false } = {}) {
+  if (!settings.apiKey || !isConnected()) return;
+  if (shouldCreateFreshSessionOnOpen(settings)) {
+    await createHermesBrowserSession({ title: makeBrowserSessionTitle(), focus });
+    setStatus('ok', 'New Hermes Browser Extension session', settings.sessionId);
+    return;
+  }
+  await ensureSessionForActiveScope({ focus });
 }
 
 async function applyContextScope(nextScope, { ensureSession = false } = {}) {
@@ -1744,19 +1765,29 @@ function runtimeContextTokens(runtime = {}) {
 function applySessionRuntimeSnapshot({ session = null, usage = null, runtime = null, sessionId = settings.sessionId, source = 'session' } = {}) {
   const id = String(sessionId || session?.id || activeSessionRuntime.sessionId || settings.sessionId || '');
   const sameSession = !activeSessionRuntime.sessionId || activeSessionRuntime.sessionId === id;
-  const sessionUsed = sessionTokenTotal(session);
-  const usageUsed = usageTokenTotal(usage);
-  const previousUsed = sameSession ? numericTokenField(activeSessionRuntime.usedTokens) : 0;
-  const usedTokens = Math.max(previousUsed, sessionUsed, usageUsed);
-  const contextTokens = runtimeContextTokens(runtime)
-    || numericTokenField(session?.context_length || session?.contextLength || session?.modelContextTokens)
-    || (sameSession ? numericTokenField(activeSessionRuntime.contextTokens) : 0)
-    || numericTokenField(settings.modelContextTokens);
+  const accounting = contextAccountingSnapshot({
+    runtime,
+    usage,
+    session,
+    modelContextTokens: sameSession ? activeSessionRuntime.contextTokens || settings.modelContextTokens : settings.modelContextTokens,
+  });
+  const contextTokens = accounting.contextLimitTokens;
   const existingModel = sameSession ? String(activeSessionRuntime.model || '').trim() : '';
   const existingProvider = sameSession ? String(activeSessionRuntime.provider || '').trim() : '';
   activeSessionRuntime = {
     sessionId: id,
-    usedTokens,
+    usedTokens: Math.max(
+      sameSession ? numericTokenField(activeSessionRuntime.usedTokens) : 0,
+      accounting.sessionSpendTokens,
+      accounting.lastTurnSpendTokens,
+    ),
+    liveContextTokens: accounting.liveContextTokens,
+    nextPromptTokens: accounting.nextPromptTokens,
+    lastTurnSpendTokens: accounting.lastTurnSpendTokens,
+    sessionSpendTokens: Math.max(
+      sameSession ? numericTokenField(activeSessionRuntime.sessionSpendTokens) : 0,
+      accounting.sessionSpendTokens,
+    ),
     inputTokens: Math.max(
       sameSession ? numericTokenField(activeSessionRuntime.inputTokens) : 0,
       numericTokenField(session?.input_tokens || session?.inputTokens),
@@ -1770,7 +1801,7 @@ function applySessionRuntimeSnapshot({ session = null, usage = null, runtime = n
     contextTokens,
     model: String(runtime?.model || existingModel || session?.model || '').trim(),
     provider: String(runtime?.provider || existingProvider || session?.provider || '').trim(),
-    source: usedTokens ? source : '',
+    source: accounting.source === 'runtime' ? source : 'local-estimate',
   };
   if (contextTokens && contextTokens !== settings.modelContextTokens) {
     settings = { ...settings, modelContextTokens: contextTokens };
@@ -2427,25 +2458,31 @@ function renderContextWindow(userText = els.input?.value || '') {
     contextScope,
     settings,
   });
-  const localSessionTokens = estimateLocalSessionTokens(userText);
-  const draftTokens = estimateTokens(userText || '') + estimateAttachmentTokens();
-  const serverSessionTokens = activeSessionRuntime.sessionId === settings.sessionId
-    ? numericTokenField(activeSessionRuntime.usedTokens)
-    : 0;
-  const sessionTokens = serverSessionTokens ? Math.max(serverSessionTokens + draftTokens, localSessionTokens) : localSessionTokens;
-  const contextLimit = numericTokenField(activeSessionRuntime.contextTokens) || stats.modelContextTokens;
+  const attachmentTokens = estimateAttachmentTokens();
+  const accounting = contextAccountingSnapshot({
+    localPromptTokens: stats.estimatedTokens,
+    draftTokens: attachmentTokens,
+    runtime: activeSessionRuntime.sessionId === settings.sessionId ? activeSessionRuntime : {},
+    modelContextTokens: stats.modelContextTokens,
+  });
+  const contextLimit = accounting.contextLimitTokens || stats.modelContextTokens;
+  const liveContextTokens = accounting.liveContextTokens;
   const runtimeLabel = [activeSessionRuntime.provider, activeSessionRuntime.model].filter(Boolean).join(' · ');
-  const sourceLabel = serverSessionTokens ? `Hermes session${runtimeLabel ? ` · ${runtimeLabel}` : ''}` : 'local estimate';
-  const meter = formatContextMeter({ estimatedTokens: sessionTokens, modelContextTokens: contextLimit });
+  const sourceLabel = accounting.source === 'runtime'
+    ? `runtime${runtimeLabel ? ` · ${runtimeLabel}` : ''}`
+    : 'local next-prompt estimate';
+  const spendTokens = numericTokenField(activeSessionRuntime.lastTurnSpendTokens || activeSessionRuntime.usedTokens);
+  const spendLabel = spendTokens ? ` · last turn spend ${formatNumber(spendTokens)} tok` : '';
+  const meter = formatContextMeter({ estimatedTokens: liveContextTokens, modelContextTokens: contextLimit });
 
   els.contextCompactLabel.textContent = meter.compactLabel;
   els.contextPercentLabel.textContent = meter.percentLabel;
   els.contextBarButton.title = contextLimit
-    ? `${formatNumber(sessionTokens)} tokens from ${sourceLabel} of ${formatNumber(contextLimit)} available. Next prompt payload estimate: ${formatNumber(stats.estimatedTokens)} tokens.`
-    : `${formatNumber(sessionTokens)} tokens from ${sourceLabel}. Selected/effective model did not report a max context window.`;
+    ? `${formatNumber(liveContextTokens)} live context tokens from ${sourceLabel} of ${formatNumber(contextLimit)} available. Next prompt payload estimate: ${formatNumber(accounting.nextPromptTokens)} tokens${spendTokens ? `. Last turn spend: ${formatNumber(spendTokens)} tokens.` : '.'}`
+    : `${formatNumber(accounting.nextPromptTokens)} next prompt tokens from ${sourceLabel}. Selected/effective model did not report a max context window${spendTokens ? `. Last turn spend: ${formatNumber(spendTokens)} tokens.` : '.'}`;
   els.contextUsageDetail.textContent = contextLimit
-    ? `${formatNumber(sessionTokens)} / ${formatNumber(contextLimit)} tokens · ${meter.percentLabel} · ${sourceLabel} · next prompt ${formatNumber(stats.estimatedTokens)} tok`
-    : `${formatNumber(sessionTokens)} tokens · ${sourceLabel} · unknown max context`;
+    ? `${formatNumber(liveContextTokens)} / ${formatNumber(contextLimit)} live context · ${meter.percentLabel} · ${sourceLabel} · next prompt ${formatNumber(accounting.nextPromptTokens)} tok${spendLabel}`
+    : `${formatNumber(accounting.nextPromptTokens)} next prompt tokens · ${sourceLabel} · unknown max context${spendLabel}`;
   els.contextMeterFill.style.width = contextLimit ? `${Math.min(100, Math.max(0, meter.percent))}%` : '0%';
 
   const pc = currentContext?.pageContext;
@@ -2527,6 +2564,7 @@ function renderModelRefreshState() {
 }
 
 async function loadModels({ quiet = false, payload = null, refresh = false } = {}) {
+  const previousSelectedModel = settings.model;
   const trackRefresh = Boolean(refresh && !payload);
   if (trackRefresh) {
     if (modelsRefreshing) return;
@@ -2608,6 +2646,19 @@ async function loadModels({ quiet = false, payload = null, refresh = false } = {
         }
       } else if (!sessionResult.ok && !quiet) {
         setStatus('warn', 'Model discovery limited', `Gateway exposes only one /v1/models row and /api/sessions was unavailable (${sessionResult.error}).`);
+      }
+    }
+
+    const refreshDecision = modelCatalogRefreshDecision({
+      previousSelectedModel,
+      discoveredModels: registryModels,
+      refresh,
+    });
+    if (refreshDecision.keepPreviousSelection) {
+      settings = { ...settings, model: refreshDecision.selectedModel };
+      registryModels = normalizeHermesModels(registryModels, refreshDecision.selectedModel);
+      if (!quiet) {
+        setStatus('warn', 'Model refresh limited', 'Hermes returned only fallback model data. Keeping your selected model until a real catalog is available.');
       }
     }
 
@@ -3591,7 +3642,7 @@ async function trimAndSaveMessages() {
   await saveMessagesForActiveScope();
 }
 
-async function loadSettings() {
+async function loadSettings({ restoreMessages = false } = {}) {
   loadContextScopeForInstance();
   const messageKey = activeMessagesStorageKey(previousConversationScope);
   const stored = await chrome.storage.local.get(['hermesBrowserSettings', messageKey]);
@@ -3609,6 +3660,7 @@ async function loadSettings() {
     agentDiscoveryHost: normalizeAgentDiscoveryHost(settings.agentDiscoveryHost || DEFAULT_SETTINGS.agentDiscoveryHost),
     agentDiscoveryScheme: normalizeAgentDiscoveryScheme(settings.agentDiscoveryScheme || DEFAULT_SETTINGS.agentDiscoveryScheme),
     autoNameSessions: settings.autoNameSessions !== false,
+    sessionStartupMode: normalizeSessionStartupMode(settings.sessionStartupMode),
     colorMode: normalizeColorMode(settings.colorMode),
     appearanceTheme: normalizeAppearanceTheme(settings.appearanceTheme),
     panelResidencyMode: normalizePanelResidencyMode(settings.panelResidencyMode),
@@ -3617,7 +3669,7 @@ async function loadSettings() {
   if (migrateDesktopOptionDefaults) {
     await chrome.storage.local.set({ hermesBrowserSettings: settings });
   }
-  messages = Array.isArray(stored[messageKey]) ? stored[messageKey] : [];
+  messages = restoreMessages && Array.isArray(stored[messageKey]) ? stored[messageKey] : [];
   syncSettingsForm();
   renderMessagesFromStorage();
 }
@@ -4546,7 +4598,7 @@ async function connectToHermes() {
     await loadSkills({ quiet: true });
     await loadProfiles({ quiet: true });
     await loadSessions({ quiet: true });
-    await ensureDefaultBrowserSession({ focus: false });
+    await initializeSessionForPanelOpen({ focus: false });
     els.connectStatus.textContent = 'Connected to Hermes. You can start chatting with page context.';
     markGatewayReachable(normalizeGatewayUrl(settings.gatewayUrl));
     setStatus('ok', 'Hermes Browser Extension connected', normalizeGatewayUrl(settings.gatewayUrl));
@@ -5103,7 +5155,7 @@ function bindEvents() {
         await loadSkills({ quiet: true });
         await loadProfiles({ quiet: true });
         await loadSessions({ quiet: true });
-        await ensureDefaultBrowserSession({ focus: false });
+        await initializeSessionForPanelOpen({ focus: false });
       }
       closeSettingsDialog();
       await refreshContext();
@@ -5137,9 +5189,17 @@ function bindEvents() {
         return;
       }
     }
-    if (shouldSubmitComposerKey(event)) {
+    const action = composerKeyAction(event, {
+      sending,
+      draftText: els.input.value,
+      attachmentCount: attachments.length,
+      canSteer: canSteerActiveRun(),
+    });
+    if (action !== 'none') {
       event.preventDefault();
-      els.composer.requestSubmit();
+      if (action === 'submit') els.composer.requestSubmit();
+      else if (action === 'steer') steerCurrentDraft();
+      else if (action === 'queue') queueCurrentDraft();
     }
   });
   els.input.addEventListener('paste', (event) => {
@@ -5292,7 +5352,7 @@ function bindEvents() {
 
 bindEvents();
 try {
-  await loadSettings();
+  await loadSettings({ restoreMessages: false });
   const state = await probeGatewayLiveness({ quiet: true });
   if (settings.apiKey && state.connected) {
     await loadGatewayCapabilities({ quiet: true, healthOk: true });
@@ -5300,7 +5360,7 @@ try {
     await loadSkills({ quiet: true });
     await loadProfiles({ quiet: true });
     await loadSessions({ quiet: true });
-    await ensureSessionForActiveScope({ focus: false });
+    await initializeSessionForPanelOpen({ focus: false });
     await consumePendingVoiceDraft();
   } else {
     renderModelOptions();

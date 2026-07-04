@@ -51,6 +51,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   agentDiscoveryHost: '127.0.0.1',
   agentDiscoveryScheme: 'http',
   autoNameSessions: true,
+  sessionStartupMode: 'new-session',
   colorMode: 'dark',
   appearanceTheme: 'nous',
   panelResidencyMode: 'tab-attached',
@@ -116,6 +117,15 @@ export function normalizeGatewayUrl(value = DEFAULT_SETTINGS.gatewayUrl) {
 export function normalizeGatewayMode(value = DEFAULT_SETTINGS.gatewayMode) {
   const normalized = String(value || '').trim().toLowerCase();
   return GATEWAY_MODES.some((mode) => mode.value === normalized) ? normalized : DEFAULT_SETTINGS.gatewayMode;
+}
+
+export function normalizeSessionStartupMode(value = DEFAULT_SETTINGS.sessionStartupMode) {
+  const normalized = String(value || DEFAULT_SETTINGS.sessionStartupMode).trim().toLowerCase();
+  return normalized === 'resume-last' ? 'resume-last' : 'new-session';
+}
+
+export function shouldCreateFreshSessionOnOpen(settings = DEFAULT_SETTINGS) {
+  return normalizeSessionStartupMode(settings?.sessionStartupMode) === 'new-session';
 }
 
 export function gatewayModeDetails(value = DEFAULT_SETTINGS.gatewayMode) {
@@ -749,8 +759,109 @@ export function buildHermesModelOptions(settings = DEFAULT_SETTINGS) {
   };
 }
 
+function positiveTokenNumber(value = 0) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+function firstPositiveToken(...values) {
+  for (const value of values) {
+    const parsed = positiveTokenNumber(value);
+    if (parsed) return parsed;
+  }
+  return 0;
+}
+
+function additiveTokenTotal(...values) {
+  return values.reduce((total, value) => total + positiveTokenNumber(value), 0);
+}
+
+export function contextAccountingSnapshot({
+  localPromptTokens = 0,
+  draftTokens = 0,
+  runtime = {},
+  usage = {},
+  session = {},
+  modelContextTokens = 0,
+} = {}) {
+  const contextLimitTokens = firstPositiveToken(
+    runtime?.context_length,
+    runtime?.contextLength,
+    runtime?.context_tokens,
+    runtime?.contextTokens,
+    session?.context_length,
+    session?.contextLength,
+    session?.modelContextTokens,
+    modelContextTokens,
+  );
+
+  const runtimePromptTokens = firstPositiveToken(
+    runtime?.last_prompt_tokens,
+    runtime?.lastPromptTokens,
+    runtime?.context_used_tokens,
+    runtime?.contextUsedTokens,
+    runtime?.liveContextTokens,
+    runtime?.prompt_tokens,
+    runtime?.promptTokens,
+  );
+
+  const nextPromptTokens = positiveTokenNumber(localPromptTokens);
+  const draftTokenCount = positiveTokenNumber(draftTokens);
+  const liveContextTokens = runtimePromptTokens || nextPromptTokens + draftTokenCount;
+
+  const explicitUsageTotal = firstPositiveToken(usage?.total_tokens, usage?.totalTokens);
+  const lastTurnSpendTokens = explicitUsageTotal || additiveTokenTotal(
+    usage?.input_tokens,
+    usage?.prompt_tokens,
+    usage?.inputTokens,
+    usage?.promptTokens,
+    usage?.output_tokens,
+    usage?.completion_tokens,
+    usage?.outputTokens,
+    usage?.completionTokens,
+    usage?.cache_read_tokens,
+    usage?.cacheReadTokens,
+    usage?.cache_write_tokens,
+    usage?.cacheWriteTokens,
+    usage?.reasoning_tokens,
+    usage?.reasoningTokens,
+  );
+
+  const explicitSessionTotal = firstPositiveToken(session?.total_tokens, session?.totalTokens);
+  const sessionSpendTokens = explicitSessionTotal || additiveTokenTotal(
+    session?.input_tokens,
+    session?.inputTokens,
+    session?.output_tokens,
+    session?.outputTokens,
+    session?.cache_read_tokens,
+    session?.cacheReadTokens,
+    session?.cache_write_tokens,
+    session?.cacheWriteTokens,
+    session?.reasoning_tokens,
+    session?.reasoningTokens,
+  );
+
+  return {
+    liveContextTokens,
+    contextLimitTokens,
+    nextPromptTokens,
+    lastTurnSpendTokens,
+    sessionSpendTokens,
+    source: runtimePromptTokens ? 'runtime' : 'local-estimate',
+  };
+}
+
+export function composerKeyAction(event = {}, state = {}) {
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return 'none';
+  const explicitSteer = Boolean(event.ctrlKey || event.metaKey);
+  if (explicitSteer && state?.sending) {
+    return busyComposerSubmitAction(state);
+  }
+  return 'submit';
+}
+
 export function shouldSubmitComposerKey(event = {}) {
-  return event.key === 'Enter' && !event.shiftKey && !event.isComposing;
+  return composerKeyAction(event) === 'submit';
 }
 
 export function busyComposerSubmitAction({ sending = false, draftText = '', attachmentCount = 0, canSteer = true } = {}) {
