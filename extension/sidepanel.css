@@ -830,6 +830,20 @@ button:disabled { cursor: wait; opacity: 0.55; transform: none; }
   line-height: 0.96;
 }
 .status-copy span { margin-top: 4px; color: var(--hermes-muted); font-size: 11px; line-height: 1.25; }
+.status-actions {
+  margin-top: 2px;
+  display: flex;
+  justify-content: flex-start;
+}
+.status-actions[hidden] { display: none; }
+.status-actions .tiny {
+  min-height: 24px;
+  padding: 5px 8px;
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
 
 .composer-command {
   position: absolute;

@@ -128,3 +128,16 @@ test('sidepanel exposes Copy Diagnostics support controls without raw diagnostic
   assert.match(js, /navigator\.clipboard\.writeText/);
   assert.doesNotMatch(html, /<textarea[^>]+diagnostics/i);
 });
+
+test('sidepanel exposes inline diagnostics action for remote setup failures', () => {
+  const html = readFileSync(new URL('../extension/sidepanel.html', import.meta.url), 'utf8');
+  const js = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../extension/sidepanel.css', import.meta.url), 'utf8');
+
+  assert.match(html, /id="statusActions"/);
+  assert.match(html, /id="statusCopyDiagnosticsButton"/);
+  assert.match(js, /function renderStatusActions\(/);
+  assert.match(js, /statusCopyDiagnosticsButton\?\.addEventListener\('click'[\s\S]*copySupportDiagnostics/s);
+  assert.match(css, /\.status-actions/);
+  assert.doesNotMatch(html, /<textarea[^>]+diagnostics/i);
+});

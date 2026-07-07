@@ -184,6 +184,8 @@ const els = {
   activeTitle: $('#activeTitle'),
   activeUrl: $('#activeUrl'),
   statusDot: $('#statusDot'),
+  statusActions: $('#statusActions'),
+  statusCopyDiagnosticsButton: $('#statusCopyDiagnosticsButton'),
   modelMenuButton: $('#modelMenuButton'),
   currentModelName: $('#currentModelName'),
   currentModelEffort: $('#currentModelEffort'),
@@ -413,6 +415,26 @@ function setStatus(kind, title, detail) {
   els.activeTitle.title = safeTitle;
   els.activeUrl.textContent = safeDetail;
   els.activeUrl.title = safeDetail;
+  renderStatusActions();
+}
+
+function renderStatusActions() {
+  if (!els.statusActions || !els.statusCopyDiagnosticsButton) return;
+  const shouldShow = lastVisibleStatus?.kind === 'error'
+    && isRemoteMode()
+    && lastRemoteDiagnostic
+    && lastRemoteDiagnostic.kind !== 'unknown';
+  els.statusActions.hidden = !shouldShow;
+}
+
+function applyRemoteDiagnostic(diagnostic, { statusKind = 'error' } = {}) {
+  if (!diagnostic || diagnostic.kind === 'unknown') return false;
+  lastRemoteDiagnostic = diagnostic;
+  renderRemoteDiagnostics(diagnostic);
+  markConnectionProbe('unreachable', diagnostic.detail);
+  scheduleConnectionProbe();
+  setStatus(statusKind, diagnostic.title, diagnostic.detail);
+  return true;
 }
 
 function openSettingsDialog() {
@@ -482,7 +504,10 @@ function renderRemoteDiagnostics(diagnostic = lastRemoteDiagnostic) {
   lastRemoteDiagnostic = diagnostic || null;
   const shouldShow = Boolean(diagnostic) && isRemoteMode();
   els.remoteDiagnosticsPanel.hidden = !shouldShow;
-  if (!shouldShow) return;
+  if (!shouldShow) {
+    renderStatusActions();
+    return;
+  }
   const origin = currentExtensionOrigin() || 'chrome-extension://<extension-id>';
   const rows = [
     ['Diagnosis', diagnostic.title || 'Remote setup issue'],
@@ -497,6 +522,7 @@ function renderRemoteDiagnostics(diagnostic = lastRemoteDiagnostic) {
     `).join('');
   }
   if (els.remoteEnvBlock) els.remoteEnvBlock.textContent = remoteEnvBlockText();
+  renderStatusActions();
 }
 
 function renderCompatibilityPanel() {
@@ -4622,6 +4648,45 @@ function markGatewayDegraded(error) {
   return diagnostic;
 }
 
+function safeHttpBodySnippet(text = '', limit = 500) {
+  return String(text || '')
+    .replace(/Bearer\s+[^\s,;]+/gi, 'Bearer [REDACTED_BEARER]')
+    .replace(/(api[_-]?key|token|password|secret)=([^\s&]+)/gi, '$1=[REDACTED]')
+    .replace(/(Authorization|Cookie):\s*[^\n]+/gi, '$1: [REDACTED]')
+    .split(String.fromCharCode(13)).join(' ')
+    .split(String.fromCharCode(10)).join(' ')
+    .slice(0, limit)
+    .trim();
+}
+
+function createSessionRouteError({ action, response, body = '' } = {}) {
+  const status = response?.status || 0;
+  const actionText = action || 'Hermes session request';
+  const diagnostic = isRemoteMode()
+    ? classifyRemoteGatewaySetup({
+        url: settings.gatewayUrl,
+        healthOk: true,
+        status,
+        body,
+      })
+    : null;
+  const knownRemoteDiagnostic = diagnostic && diagnostic.kind !== 'unknown' ? diagnostic : null;
+  const fallbackDetail = safeHttpBodySnippet(body) || `HTTP ${status}`;
+  const message = knownRemoteDiagnostic
+    ? `${knownRemoteDiagnostic.title}: ${knownRemoteDiagnostic.detail}`
+    : `${actionText} failed (${status}): ${fallbackDetail}`;
+  const error = new Error(message);
+  error.name = 'HermesSessionRouteError';
+  error.httpStatus = status;
+  error.sessionRouteAction = actionText;
+  error.remoteDiagnostic = knownRemoteDiagnostic;
+  error.hermesSetupFailure = Boolean(knownRemoteDiagnostic)
+    || status === 401
+    || status === 403
+    || status === 0;
+  return error;
+}
+
 async function ensureHermesSession() {
   if (sessionRoutesAvailable === false || gatewayCapabilities.sessions === false || gatewayCapabilities.sessionChat === false) return false;
   const sessionPath = `/api/sessions/${encodeSessionId(settings.sessionId)}`;
@@ -4632,7 +4697,11 @@ async function ensureHermesSession() {
   }
   if (getResponse.status !== 404) {
     const text = await getResponse.text();
-    throw new Error(`Could not inspect Hermes session (${getResponse.status}): ${text.slice(0, 500)}`);
+    throw createSessionRouteError({
+      action: 'Inspect Hermes Browser Extension session',
+      response: getResponse,
+      body: text,
+    });
   }
 
   const createResponse = await apiFetch('/api/sessions', {
@@ -4652,7 +4721,11 @@ async function ensureHermesSession() {
   }
   if (!createResponse.ok && createResponse.status !== 409) {
     const text = await createResponse.text();
-    throw new Error(`Could not create Hermes Browser Extension session (${createResponse.status}): ${text.slice(0, 500)}`);
+    throw createSessionRouteError({
+      action: 'Create Hermes Browser Extension session',
+      response: createResponse,
+      body: text,
+    });
   }
   sessionRoutesAvailable = true;
   return true;
@@ -5265,6 +5338,9 @@ async function askHermes(userText, turnAttachments = [...attachments]) {
     } catch (streamError) {
       if (isAbortError(streamError)) {
         answer = liveText ? `${liveText}\n\n[stopped by user]` : '[stopped by user]';
+      } else if (streamError?.hermesSetupFailure) {
+        streamView.update(`Hermes setup issue.\n${streamError.message}`);
+        throw streamError;
       } else if (isRemoteWsMode()) {
         // No REST fallback in remote-dashboard mode — the api_server surface is
         // not reachable cross-origin. Surface the WS/ticket error directly.
@@ -5284,6 +5360,10 @@ async function askHermes(userText, turnAttachments = [...attachments]) {
     didSend = true;
   } catch (error) {
     if (!isAbortError(error)) {
+      if (error?.remoteDiagnostic && applyRemoteDiagnostic(error.remoteDiagnostic, { statusKind: 'error' })) {
+        addMessage('system', `Hermes Browser Extension setup issue: ${error.remoteDiagnostic.detail} Open Settings → Support diagnostics → Copy Diagnostics and paste the redacted report if you need help.`);
+        return didSend;
+      }
       const diagnostic = classifyGatewayError(error);
       if (diagnostic.probeStatus === 'degraded') {
         markGatewayDegraded(error);
@@ -5429,6 +5509,9 @@ async function testConnection() {
 
     ok = true;
   } catch (error) {
+    if (error?.remoteDiagnostic && applyRemoteDiagnostic(error.remoteDiagnostic, { statusKind: 'error' })) {
+      return;
+    }
     markGatewayUnreachable(error);
     if (isRemoteMode()) {
       const diagnostic = classifyRemoteGatewaySetup({
@@ -5436,9 +5519,7 @@ async function testConnection() {
         error: error?.message || String(error),
       });
       if (diagnostic.kind !== 'unknown') {
-        lastRemoteDiagnostic = diagnostic;
-        renderRemoteDiagnostics(diagnostic);
-        setStatus('error', diagnostic.title, diagnostic.detail);
+        applyRemoteDiagnostic(diagnostic, { statusKind: 'error' });
       } else {
         setStatus('error', 'Hermes gateway test failed', currentConnectionTroubleshooting() || error?.message || String(error));
       }
@@ -5713,6 +5794,9 @@ function bindEvents() {
   });
   els.testConnectionButton.addEventListener('click', testConnection);
   els.copyDiagnosticsButton?.addEventListener('click', () => {
+    copySupportDiagnostics().catch((error) => setStatus('warn', 'Diagnostics copy failed', error?.message || String(error)));
+  });
+  els.statusCopyDiagnosticsButton?.addEventListener('click', () => {
     copySupportDiagnostics().catch((error) => setStatus('warn', 'Diagnostics copy failed', error?.message || String(error)));
   });
   els.clearTokenButton?.addEventListener('click', () => {

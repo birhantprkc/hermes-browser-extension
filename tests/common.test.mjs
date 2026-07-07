@@ -526,6 +526,42 @@ test('remote setup diagnostics UI exposes copyable API-server env guidance', () 
   assert.match(css, /\.remote-env-block/);
 });
 
+test('remote session route 403s classify as API authorization failures', () => {
+  const diagnostic = classifyRemoteGatewaySetup({
+    url: 'https://agent.example.com:8642',
+    healthOk: true,
+    status: 403,
+    body: '{"error":"Forbidden"}',
+  });
+
+  assert.equal(diagnostic.kind, 'api-auth');
+  assert.equal(diagnostic.title, 'API server needs authorization');
+  assert.match(diagnostic.detail, /Authorization: Bearer/);
+  assert.equal(diagnostic.suggestedUrl, 'https://agent.example.com:8642');
+});
+
+test('sidepanel routes session creation failures through remote setup diagnostics', () => {
+  const source = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
+
+  assert.match(source, /function createSessionRouteError\(/);
+  assert.match(source, /classifyRemoteGatewaySetup\(\{[\s\S]*?healthOk:\s*true[\s\S]*?status[\s\S]*?body/s);
+  assert.match(source, /throw createSessionRouteError\(\{[\s\S]*?Inspect Hermes Browser Extension session[\s\S]*?response:\s*getResponse/s);
+  assert.match(source, /throw createSessionRouteError\(\{[\s\S]*?Create Hermes Browser Extension session[\s\S]*?response:\s*createResponse/s);
+  assert.doesNotMatch(source, /Could not create Hermes Browser Extension session \(\$\{createResponse\.status\}\):/);
+});
+
+test('setup/session failures do not trigger misleading non-stream retry copy', () => {
+  const source = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
+  const streamCatch = source.match(/catch \(streamError\) \{[\s\S]*?answer = await fallbackSessionChat\(prompt, preparedAttachments, \{ onRuntime: applyTurnRuntimePayload \}\);[\s\S]*?\n\s*\}/)?.[0] || '';
+
+  assert.match(streamCatch, /streamError\?\.hermesSetupFailure/);
+  assert.match(streamCatch, /throw streamError/);
+  assert.ok(
+    streamCatch.indexOf('streamError?.hermesSetupFailure') < streamCatch.indexOf('Streaming failed, retrying non-streaming'),
+    'setup failures must be handled before generic stream retry fallback',
+  );
+});
+
 test('model selection stays pending until runtime metadata confirms or warns', () => {
   const source = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
   assert.match(source, /let modelSelectionVersion\s*=\s*0/);
