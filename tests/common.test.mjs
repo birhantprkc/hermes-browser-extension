@@ -85,6 +85,7 @@ import {
   toolLabelForName,
   sanitizeToolPreview,
   normalizeToolActivity,
+  shouldReuseImageGenerationActivity,
   TEXT_SIZE_OPTIONS,
 } from '../extension/lib/common.mjs';
 import {
@@ -271,6 +272,47 @@ test('tool activity helpers categorize, label, and sanitize tool previews', () =
   assert.equal(normalized.label, 'Reading file');
   assert.match(normalized.preview, /README\.md/);
   assert.equal(typeof normalized.ts, 'number');
+
+  const imageGeneration = normalizeToolActivity({
+    tool_name: 'image_generate',
+    args: { aspect_ratio: 'portrait' },
+  });
+  assert.equal(imageGeneration.aspectRatio, 'portrait');
+  assert.equal(normalizeToolActivity({ tool_name: 'image_generate', args: { aspect_ratio: 'invalid' } }).aspectRatio, 'landscape');
+});
+
+test('image generation activity keeps a stable tool-call identity across progress events', () => {
+  const started = normalizeToolActivity({
+    status: 'started',
+    toolName: 'image_generate',
+    data: {
+      tool_name: 'image_generate',
+      tool_call_id: 'call-image-42',
+      args: { aspect_ratio: 'portrait' },
+    },
+  });
+  const progress = normalizeToolActivity({
+    status: 'progress',
+    data: { tool_name: 'image_generate', tool_call_id: 'call-image-42' },
+  });
+  const nextCall = normalizeToolActivity({
+    status: 'started',
+    data: { tool_name: 'image_generate', tool_call_id: 'call-image-43' },
+  });
+
+  assert.equal(started.activityId, 'call-image-42');
+  assert.equal(started.status, 'started');
+  assert.equal(started.aspectRatio, 'portrait');
+  assert.equal(shouldReuseImageGenerationActivity(started, progress), true);
+  assert.equal(shouldReuseImageGenerationActivity(progress, nextCall), false);
+  assert.equal(shouldReuseImageGenerationActivity(
+    { rawName: 'image_generate', status: 'started' },
+    { rawName: 'image_generate', status: 'progress' },
+  ), true);
+  assert.equal(shouldReuseImageGenerationActivity(
+    { rawName: 'image_generate', status: 'completed' },
+    { rawName: 'image_generate', status: 'started' },
+  ), false);
 });
 
 test('pairingFailureMessage explains a missing pairing route instead of a bare 404', () => {
@@ -963,7 +1005,7 @@ test('tool activity strip is wired as runtime UI instead of raw tool markdown', 
   assert.match(source, /function setToolActivity/);
   assert.match(source, /updateTool\(tool/);
   assert.match(source, /normalizeBrowserRuntimeEvent/);
-  assert.match(source, /streamView\.updateTool\(normalizeToolActivity\(tool\.data \|\| tool\)\)/);
+  assert.match(source, /streamView\.updateTool\(normalizeToolActivity\(tool\)\)/);
   assert.doesNotMatch(source, /\\n\\n\[tool\]/);
   assert.match(css, /\.tool-activity\b/);
   for (const category of ['file', 'edit', 'terminal', 'browser', 'web', 'media', 'meta']) {
@@ -1580,6 +1622,20 @@ test('context meter display is one accurate session context meter without cumula
   assert.doesNotMatch(display.title, /spend|last turn|cumulative/i);
 });
 
+test('context meter labels local prompt estimates without claiming they are live session context', () => {
+  const accounting = contextAccountingSnapshot({
+    localPromptTokens: 14,
+    modelContextTokens: 1_048_576,
+  });
+  const display = contextMeterDisplay({ accounting });
+
+  assert.equal(accounting.source, 'local-estimate');
+  assert.match(display.detail, /14 \/ 1,048,576 next request estimate/);
+  assert.match(display.detail, /runtime session usage unavailable/);
+  assert.doesNotMatch(display.detail, /14 \/ 1,048,576 session context/);
+  assert.match(display.title, /next request estimate/i);
+});
+
 test('sidepanel context meter copy does not split out cumulative token spend', () => {
   const source = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /last turn spend|Last turn spend|cumulative spend/i);
@@ -1646,6 +1702,17 @@ test('context controls are capability gated and recommend compaction near the co
     compactRecommended: false,
     label: 'Context status unavailable',
   });
+  assert.deepEqual(contextControlState({ capabilities: {}, percentUsed: 0, contextSource: 'local-estimate' }), {
+    canInspect: false,
+    canCompact: false,
+    compactRecommended: false,
+    label: 'Live session usage unavailable — showing next-request estimate',
+  });
+});
+
+test('sidepanel passes context accounting source into context status copy', () => {
+  const source = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
+  assert.match(source, /contextControlState\(\{ capabilities: gatewayCapabilities, percentUsed: meter\.percent, contextSource: accounting\.source \}\)/);
 });
 
 test('sidepanel adopts rotated session id returned by native context compaction', () => {

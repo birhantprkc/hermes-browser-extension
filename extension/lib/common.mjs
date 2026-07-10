@@ -3,6 +3,7 @@ import {
   buildBrowserContextPrompt,
 } from './browser-context-protocol.mjs';
 import { formatPickedElementBlock } from './element-picker.mjs';
+import { normalizeImageAspectRatio, resolveImageSource } from './image-render.mjs';
 import { redactSensitiveText } from './redaction.mjs';
 export { redactSensitiveText };
 
@@ -494,14 +495,47 @@ export function sanitizeToolPreview(value = '', maxChars = 110) {
   return `${text.slice(0, max - 1).trimEnd()}…`;
 }
 
+export function shouldReuseImageGenerationActivity(previous = {}, next = {}) {
+  const previousName = String(previous?.rawName || previous?.toolName || '').trim();
+  const nextName = String(next?.rawName || next?.toolName || '').trim();
+  if (!/image_generate/i.test(previousName) || !/image_generate/i.test(nextName)) return false;
+
+  const previousId = String(previous?.activityId || '').trim();
+  const nextId = String(next?.activityId || '').trim();
+  if (previousId && nextId) return previousId === nextId;
+
+  const previousDone = /^(completed|finished|done|success|error|failed)$/i.test(String(previous?.status || ''));
+  const nextStarted = /^(started|running|begin|pending)$/i.test(String(next?.status || ''));
+  return !(previousDone && nextStarted);
+}
+
 export function normalizeToolActivity(tool = {}) {
-  const rawName = String(tool?.tool_name || tool?.tool || tool?.name || 'Hermes tool').trim() || 'Hermes tool';
+  const data = tool?.data && typeof tool.data === 'object' ? tool.data : tool;
+  const rawName = String(data?.tool_name || data?.tool || data?.name || tool?.toolName || tool?.rawName || 'Hermes tool').trim() || 'Hermes tool';
   const category = toolCategoryForName(rawName);
+  const args = data?.args && typeof data.args === 'object' ? data.args : {};
+  const activityId = String(
+    data?.tool_call_id
+      || data?.toolCallId
+      || data?.call_id
+      || data?.callId
+      || data?.tool_id
+      || data?.toolId
+      || data?.id
+      || tool?.activityId
+      || '',
+  ).trim().slice(0, 160);
+  const status = String(tool?.status || data?.status || data?.state || 'progress').trim().toLowerCase() || 'progress';
   return {
     rawName,
     category,
     label: toolLabelForName(rawName, category),
-    preview: sanitizeToolPreview(tool?.preview || tool?.message || tool?.input || ''),
+    preview: sanitizeToolPreview(tool?.preview || data?.preview || data?.message || data?.input || ''),
+    aspectRatio: /image_generate/i.test(rawName)
+      ? normalizeImageAspectRatio(args.aspect_ratio || args.aspectRatio || data?.aspect_ratio || data?.aspectRatio)
+      : '',
+    activityId,
+    status,
     ts: Date.now(),
   };
 }
@@ -591,17 +625,21 @@ export function contextMeterDisplay({ accounting = {}, runtimeLabel = '', modelC
   const liveContextTokens = positiveTokenNumber(accounting?.liveContextTokens);
   const contextLimitTokens = firstPositiveToken(accounting?.contextLimitTokens, modelContextTokens);
   const meter = formatContextMeter({ estimatedTokens: liveContextTokens, modelContextTokens: contextLimitTokens });
-  const sourceLabel = accounting?.source === 'runtime'
+  const hasRuntimeUsage = accounting?.source === 'runtime';
+  const sourceLabel = hasRuntimeUsage
     ? `runtime${runtimeLabel ? ` · ${runtimeLabel}` : ''}`
-    : 'local session estimate';
+    : 'runtime session usage unavailable';
+  const contextLabel = hasRuntimeUsage ? 'session context' : 'next request estimate';
   const usedLabel = formatWholeNumber(liveContextTokens);
   const limitLabel = formatWholeNumber(contextLimitTokens);
   const detail = contextLimitTokens
-    ? `${usedLabel} / ${limitLabel} session context · ${meter.percentLabel} · ${sourceLabel}`
-    : `${usedLabel} session context tokens · unknown max context · ${sourceLabel}`;
+    ? `${usedLabel} / ${limitLabel} ${contextLabel} · ${meter.percentLabel} · ${sourceLabel}`
+    : `${usedLabel} ${contextLabel} tokens · unknown max context · ${sourceLabel}`;
   const title = contextLimitTokens
-    ? `${usedLabel} session context tokens used of ${limitLabel} available (${meter.percentLabel}, ${sourceLabel}).`
-    : `${usedLabel} session context tokens estimated. Selected/effective model did not report a max context window (${sourceLabel}).`;
+    ? (hasRuntimeUsage
+      ? `${usedLabel} session context tokens used of ${limitLabel} available (${meter.percentLabel}, ${sourceLabel}).`
+      : `Next request estimate: ${usedLabel} tokens of ${limitLabel} available (${meter.percentLabel}; ${sourceLabel}).`)
+    : `${usedLabel} ${contextLabel} tokens estimated. Selected/effective model did not report a max context window (${sourceLabel}).`;
   return {
     ...meter,
     liveContextTokens,
@@ -612,15 +650,22 @@ export function contextMeterDisplay({ accounting = {}, runtimeLabel = '', modelC
   };
 }
 
-export function contextControlState({ capabilities = {}, percentUsed = 0 } = {}) {
+export function contextControlState({ capabilities = {}, percentUsed = 0, contextSource = '' } = {}) {
   const canInspect = Boolean(capabilities.sessionContext || capabilities.contextStatus || capabilities.context_status);
   const canCompact = Boolean(capabilities.sessionCompress || capabilities.contextCompress || capabilities.context_compress);
   const compactRecommended = canCompact && Number(percentUsed || 0) >= 70;
+  const localEstimateOnly = contextSource === 'local-estimate';
   return {
     canInspect,
     canCompact,
     compactRecommended,
-    label: canCompact ? 'Compact context' : (canInspect ? 'Context status available' : 'Context status unavailable'),
+    label: canCompact
+      ? 'Compact context'
+      : (canInspect
+        ? 'Context status available'
+        : (localEstimateOnly
+          ? 'Live session usage unavailable — showing next-request estimate'
+          : 'Context status unavailable')),
   };
 }
 
@@ -1208,11 +1253,30 @@ function safeHref(value = '') {
   }
 }
 
+function generatedImageMarkup(source = '', alt = 'Generated image', { inline = false } = {}) {
+  const safeSource = resolveImageSource(source);
+  if (!safeSource) return '';
+  const image = `<img src="${escapeHtml(safeSource)}" alt="${escapeHtml(alt || 'Generated image')}" loading="lazy" decoding="async" data-slot="aui_generated-image" />`;
+  return inline ? image : `<figure class="generated-image" data-slot="aui_generated-image">${image}</figure>`;
+}
+
+function generatedImageUnavailableMarkup() {
+  return '<div class="generated-image-unavailable" role="status">Generated image unavailable in this browser response.</div>';
+}
+
 function renderInlineMarkdown(value = '') {
   const parts = String(value || '').split(/(`[^`]+`)/g);
   return parts.map((part) => {
     if (/^`[^`]+`$/.test(part)) return `<code>${escapeHtml(part.slice(1, -1))}</code>`;
-    let html = escapeHtml(part);
+    const images = [];
+    const withImageTokens = part.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, source) => {
+      const image = generatedImageMarkup(source, alt, { inline: true });
+      if (!image) return match;
+      images.push(image);
+      return `@@HERMES_IMAGE_${images.length - 1}@@`;
+    });
+    let html = escapeHtml(withImageTokens);
+    html = html.replace(/@@HERMES_IMAGE_(\d+)@@/g, (_match, index) => images[Number(index)] || '');
     html = html.replace(/\[([^\]]+)\]\(([^\s)]+)\)/g, (_match, text, href) => {
       const safe = safeHref(href);
       return safe ? `<a href="${safe}" target="_blank" rel="noopener noreferrer">${text}</a>` : text;
@@ -1293,6 +1357,22 @@ export function renderMarkdown(value = '') {
     if (!trimmed) {
       flushParagraph(out, paragraph);
       flushList(out, list);
+      continue;
+    }
+    const markdownImage = /^!\[([^\]]*)\]\((.+)\)$/.exec(trimmed);
+    if (markdownImage) {
+      flushParagraph(out, paragraph);
+      flushList(out, list);
+      const image = generatedImageMarkup(markdownImage[2], markdownImage[1]);
+      out.push(image || generatedImageUnavailableMarkup());
+      continue;
+    }
+    const mediaTag = /^MEDIA:\s*(.+)$/.exec(trimmed);
+    if (mediaTag) {
+      flushParagraph(out, paragraph);
+      flushList(out, list);
+      const image = generatedImageMarkup(mediaTag[1]);
+      out.push(image || generatedImageUnavailableMarkup());
       continue;
     }
     if (isHorizontalRule(line)) {

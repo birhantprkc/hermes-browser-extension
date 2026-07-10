@@ -62,6 +62,7 @@ import {
   runtimeValueMatches,
   safeTab,
   shouldRequireModelLock,
+  shouldReuseImageGenerationActivity,
   shouldStopSessionPaging,
   shouldFallbackToWebSpeechForTranscription,
   shouldAutoOpenSessionGroup,
@@ -87,7 +88,8 @@ import {
   connectionSecuritySummary,
   normalizeGatewayCapabilities,
 } from './lib/capabilities.mjs';
-import { normalizeBrowserRuntimeEvent } from './lib/runtime-events.mjs';
+import { normalizeBrowserRuntimeEvent, reduceAssistantStreamText } from './lib/runtime-events.mjs';
+import { createDiffusionCanvas, diffusionVariantForSeed } from './lib/diffusion-canvas.mjs';
 import { buildSupportDiagnostics } from './lib/support-diagnostics.mjs';
 import {
   DEFAULT_AGENT_PORTS,
@@ -2765,7 +2767,7 @@ function renderContextWindow(userText = els.input?.value || '') {
   els.contextBarButton.title = meter.title;
   els.contextUsageDetail.textContent = meter.detail;
   els.contextMeterFill.style.width = contextLimit ? `${Math.min(100, Math.max(0, meter.percent))}%` : '0%';
-  const controls = contextControlState({ capabilities: gatewayCapabilities, percentUsed: meter.percent });
+  const controls = contextControlState({ capabilities: gatewayCapabilities, percentUsed: meter.percent, contextSource: accounting.source });
   if (els.contextControlStatus) {
     els.contextControlStatus.textContent = controls.compactRecommended
       ? 'Context is getting full — compact when the runtime supports it.'
@@ -4040,7 +4042,198 @@ function renderMessageContentElement(element, content = '') {
   element.innerHTML = renderMarkdown(content || '');
 }
 
+function closeGeneratedImageLightbox() {
+  document.querySelector('.generated-image-lightbox')?.remove();
+}
+
+function generatedImageDownloadName(source = '') {
+  const dataType = /^data:image\/(png|jpe?g|gif|webp|bmp);/i.exec(source)?.[1]?.toLowerCase();
+  const extension = dataType === 'jpeg' ? 'jpg' : dataType;
+  return `hermes-generated-image.${extension || 'png'}`;
+}
+
+function openGeneratedImageLightbox(image) {
+  const source = String(image?.currentSrc || image?.src || '').trim();
+  if (!source) return;
+  closeGeneratedImageLightbox();
+
+  const dialog = document.createElement('div');
+  dialog.className = 'generated-image-lightbox';
+  dialog.setAttribute('role', 'dialog');
+  dialog.setAttribute('aria-modal', 'true');
+  dialog.setAttribute('aria-label', image.alt || 'Generated image preview');
+
+  const frame = document.createElement('div');
+  frame.className = 'generated-image-lightbox-frame';
+  const preview = document.createElement('img');
+  preview.src = source;
+  preview.alt = image.alt || 'Generated image';
+
+  const actions = document.createElement('div');
+  actions.className = 'generated-image-lightbox-actions';
+  const download = document.createElement('a');
+  download.className = 'generated-image-lightbox-download';
+  download.href = source;
+  download.download = generatedImageDownloadName(source);
+  download.target = '_blank';
+  download.rel = 'noopener noreferrer';
+  download.textContent = 'Download';
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'generated-image-lightbox-close';
+  close.textContent = 'Close';
+  close.addEventListener('click', closeGeneratedImageLightbox);
+  actions.append(download, close);
+  frame.append(preview, actions);
+  dialog.append(frame);
+  dialog.addEventListener('click', (event) => {
+    if (event.target === dialog) closeGeneratedImageLightbox();
+  });
+  document.body.append(dialog);
+  close.focus();
+}
+
+function extractRenderableImageSource(content = '') {
+  const html = renderMarkdown(content || '');
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const image = template.content.querySelector('img[data-slot="aui_generated-image"]');
+  return String(image?.getAttribute('src') || '').trim();
+}
+
+function activeImageGenerationPlaceholder(node) {
+  return node?.querySelector('.message-tool-activity .image-gen-placeholder') || null;
+}
+
+function loadGeneratedImageForReveal(source = '') {
+  return new Promise((resolve, reject) => {
+    const image = new globalThis.Image();
+    image.className = 'generated-image-reveal-source';
+    image.alt = '';
+    image.decoding = 'async';
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Generated image could not be decoded for reveal.'));
+    image.src = source;
+  });
+}
+
+async function revealGeneratedImage(placeholder, source = '') {
+  if (!placeholder?._reveal || !source) return false;
+  try {
+    const image = await loadGeneratedImageForReveal(source);
+    const naturalRatio = image.naturalWidth / image.naturalHeight;
+    if (Number.isFinite(naturalRatio) && naturalRatio > 0) {
+      placeholder.style.aspectRatio = String(naturalRatio);
+      placeholder.style.setProperty('--image-gen-natural-ratio', String(naturalRatio));
+      placeholder.style.width = `min(100%, calc(var(--image-gen-max-preview-height) * ${naturalRatio}))`;
+    }
+    placeholder.appendChild(image);
+    placeholder.classList.add('generated-image-revealing');
+    await placeholder._reveal(image);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function revealGeneratedImageFromContent(node, content = '') {
+  const placeholder = activeImageGenerationPlaceholder(node);
+  const source = extractRenderableImageSource(content);
+  if (!placeholder || !source) return false;
+  return revealGeneratedImage(placeholder, source);
+}
+
+function imageVisualSeed(activity = {}) {
+  const values = new Uint32Array(2);
+  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(values);
+  else {
+    values[0] = Date.now() >>> 0;
+    values[1] = Math.floor(Math.random() * 0xffffffff) >>> 0;
+  }
+  return `${activity.activityId || 'image'}-${values[0]}-${values[1]}-${Date.now()}`;
+}
+
+function configureImageVhsLayer(layer, variant) {
+  const scan = variant.scan;
+  layer.style.setProperty('--image-gen-vhs-duration', `${scan.duration}s`);
+  layer.style.setProperty('--image-gen-vhs-band-height', `${scan.bandHeight}%`);
+  layer.style.setProperty('--image-gen-vhs-dropout-top', `${scan.dropoutTop}%`);
+  layer.style.setProperty('--image-gen-vhs-dropout-duration', `${scan.dropoutDuration}s`);
+  layer.style.setProperty('--image-gen-vhs-delay', `${scan.delay}s`);
+  layer.style.setProperty('--image-gen-vhs-tear-shift', `${scan.tearShift}px`);
+  layer.style.setProperty('--image-gen-vhs-line-gap', `${scan.lineGap}px`);
+  layer.style.setProperty('--image-gen-vhs-luma-duration', `${scan.lumaDuration}s`);
+  layer.style.setProperty('--image-gen-vhs-band-opacity', `${scan.bandOpacity}`);
+}
+
+function renderImageGenPlaceholder(activity = {}) {
+  const root = document.createElement('div');
+  const aspectRatio = activity.aspectRatio || 'landscape';
+  const visualSeed = activity.visualSeed || imageVisualSeed(activity);
+  const variant = diffusionVariantForSeed(visualSeed);
+  root.className = `image-gen-placeholder image-gen-placeholder-${aspectRatio}`;
+  root.dataset.toolName = activity.rawName || 'image_generate';
+  root.dataset.toolStatus = activity.status || 'progress';
+  root.dataset.visualSeed = String(variant.seed);
+  root.dataset.visualProfile = variant.profile;
+  root.setAttribute('role', 'status');
+  root.setAttribute('aria-live', 'polite');
+  root.setAttribute('aria-label', 'Hermes is generating an image');
+
+  const canvas = document.createElement('canvas');
+  canvas.className = 'image-gen-diffusion-canvas';
+  canvas.setAttribute('aria-hidden', 'true');
+
+  const grid = document.createElement('div');
+  grid.className = 'image-gen-grid';
+  grid.setAttribute('aria-hidden', 'true');
+  const vhs = document.createElement('div');
+  vhs.className = 'image-gen-vhs';
+  vhs.setAttribute('aria-hidden', 'true');
+  configureImageVhsLayer(vhs, variant);
+
+  const registration = document.createElement('div');
+  registration.className = 'image-gen-registration';
+  registration.setAttribute('aria-hidden', 'true');
+  for (const corner of ['nw', 'ne', 'sw', 'se']) {
+    const mark = document.createElement('i');
+    mark.className = `image-gen-corner image-gen-corner-${corner}`;
+    registration.appendChild(mark);
+  }
+
+  const chrome = document.createElement('div');
+  chrome.className = 'image-gen-chrome';
+  const title = document.createElement('strong');
+  title.textContent = 'Hermes image synthesis';
+  const meta = document.createElement('span');
+  meta.textContent = `${aspectRatio} // active`;
+  chrome.append(title, meta);
+
+  const status = document.createElement('div');
+  status.className = 'image-gen-status';
+  const phaseTrack = document.createElement('div');
+  phaseTrack.className = 'image-gen-phase-track';
+  for (const phase of ['LATENT FIELD', 'DENOISING', 'RESOLVING', 'FINALIZING']) {
+    const phaseLabel = document.createElement('span');
+    phaseLabel.textContent = phase;
+    phaseTrack.appendChild(phaseLabel);
+  }
+  const pulse = document.createElement('span');
+  pulse.className = 'image-gen-pulse';
+  pulse.setAttribute('aria-hidden', 'true');
+  pulse.append(document.createElement('i'), document.createElement('i'), document.createElement('i'));
+  status.append(phaseTrack, pulse);
+
+  root.append(canvas, grid, vhs, registration, chrome, status);
+  const diffusion = createDiffusionCanvas(canvas, { aspectRatio, seed: visualSeed });
+  root._start = () => diffusion.start();
+  root._reveal = (image) => diffusion.reveal(image);
+  root._dispose = () => diffusion.stop();
+  return root;
+}
+
 function renderToolActivity(activity = {}) {
+  if (/image_generate/i.test(activity.rawName || '')) return renderImageGenPlaceholder(activity);
   const category = activity.category || 'meta';
   const root = document.createElement('div');
   root.className = `tool-activity tool-kind-${category}`;
@@ -4085,6 +4278,7 @@ function setToolActivity(node, activity = null) {
   if (!node) return;
   let slot = node.querySelector('.message-tool-activity');
   if (!activity) {
+    slot?.querySelector('.image-gen-placeholder')?._dispose?.();
     slot?.remove();
     return;
   }
@@ -4095,7 +4289,40 @@ function setToolActivity(node, activity = null) {
     if (content?.nextSibling) node.insertBefore(slot, content.nextSibling);
     else node.appendChild(slot);
   }
-  slot.replaceChildren(renderToolActivity(activity));
+
+  const existingImage = slot.querySelector('.image-gen-placeholder');
+  const isImageGeneration = /image_generate/i.test(activity.rawName || '');
+  const previousImageActivity = {
+    rawName: slot.dataset.imageActivityName || '',
+    activityId: slot.dataset.imageActivityId || '',
+    status: slot.dataset.imageActivityStatus || '',
+  };
+  if (isImageGeneration && existingImage && shouldReuseImageGenerationActivity(previousImageActivity, activity)) {
+    slot.dataset.imageActivityId = activity.activityId || previousImageActivity.activityId;
+    slot.dataset.imageActivityStatus = activity.status || 'progress';
+    existingImage.dataset.toolStatus = activity.status || 'progress';
+    return;
+  }
+  if (existingImage && !isImageGeneration) {
+    return;
+  }
+
+  let nextActivity = activity;
+  if (isImageGeneration) {
+    nextActivity = { ...activity, visualSeed: imageVisualSeed(activity) };
+    slot.dataset.imageActivityName = activity.rawName || 'image_generate';
+    slot.dataset.imageActivityId = activity.activityId || '';
+    slot.dataset.imageActivityStatus = activity.status || 'progress';
+  } else {
+    delete slot.dataset.imageActivityName;
+    delete slot.dataset.imageActivityId;
+    delete slot.dataset.imageActivityStatus;
+  }
+
+  existingImage?._dispose?.();
+  const toolActivity = renderToolActivity(nextActivity);
+  slot.replaceChildren(toolActivity);
+  toolActivity._start?.();
   requestAnimationFrame(() => {
     els.appScroll.scrollTop = els.appScroll.scrollHeight;
   });
@@ -4147,11 +4374,18 @@ function setMessageContent(node, content) {
 function createStreamingMessageUpdater(node) {
   let pending = '';
   let frame = 0;
-  const flush = (content = pending) => {
+  let revealPromise = null;
+  const flush = async (content = pending) => {
     pending = content || '';
     if (frame) {
       cancelAnimationFrame(frame);
       frame = 0;
+    }
+    const existingImage = activeImageGenerationPlaceholder(node);
+    const imageSource = extractRenderableImageSource(pending);
+    if (existingImage && imageSource) {
+      revealPromise ||= revealGeneratedImageFromContent(node, pending);
+      await revealPromise;
     }
     setToolActivity(node, null);
     setMessageContent(node, pending);
@@ -5033,46 +5267,37 @@ function sseBlocksFromBuffer(buffer, { flush = false } = {}) {
   return { blocks, rest };
 }
 
-function textFromRunCompleted(data = {}) {
-  const messagesList = Array.isArray(data.messages) ? data.messages : [];
-  for (let index = messagesList.length - 1; index >= 0; index -= 1) {
-    const message = messagesList[index];
-    if (message?.role === 'assistant' && message.content) return String(message.content);
-  }
-  return data.content ? String(data.content) : '';
-}
-
-
 async function readSseResponse(response, onDelta, onTool, { signal, onRun, onSteerQueued, onRuntime } = {}) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
   let finalText = '';
+  let streamTextState = { text: '', finalized: false };
 
   async function processBlock(block) {
     const event = parseSseBlock(block);
     const data = event.json || {};
     if (event.type === 'run.started' && data.run_id) {
       onRun?.(data.run_id);
-    } else if (event.type === 'assistant.delta' && data.delta) {
-      finalText += data.delta;
-      onDelta(finalText);
-    } else if (event.type === 'assistant.completed' && data.content) {
-      finalText = finalText || data.content;
+    } else if ((event.type === 'assistant.delta' && data.delta) || (event.type === 'assistant.completed' && data.content)) {
+      streamTextState = reduceAssistantStreamText(streamTextState, { type: event.type, data });
+      finalText = streamTextState.text;
       onDelta(finalText);
     } else if (event.type === 'run.completed') {
       onRuntime?.(data);
-      const completedText = textFromRunCompleted(data);
-      if (completedText) {
-        finalText = completedText;
+      const nextState = reduceAssistantStreamText(streamTextState, { type: event.type, data });
+      if (nextState.text !== finalText) {
+        finalText = nextState.text;
         onDelta(finalText);
       }
+      streamTextState = nextState;
     } else if (event.type === 'steer.queued' && data.text) {
       onSteerQueued?.(data.text);
     } else if (event.type === 'chat.completion.chunk' || event.type === 'message') {
       const nextText = appendOpenAiChunkText(event, finalText);
       if (nextText !== finalText) {
         finalText = nextText;
+        streamTextState = { text: finalText, finalized: false };
         onDelta(finalText);
       }
     } else if (event.type?.startsWith('tool.') && onTool) {
@@ -5603,7 +5828,7 @@ async function askHermes(userText, turnAttachments = [...attachments]) {
           liveText = partial || '';
           streamView.updateText(liveText || THINKING_PLACEHOLDER);
         },
-        (tool) => streamView.updateTool(normalizeToolActivity(tool.data || tool)),
+        (tool) => streamView.updateTool(normalizeToolActivity(tool)),
         {
           signal: activeAbortController.signal,
           attachments: preparedAttachments,
@@ -5631,7 +5856,7 @@ async function askHermes(userText, turnAttachments = [...attachments]) {
       }
     }
     const finalAnswer = answer || liveText || '(empty response)';
-    streamView.flush(finalAnswer);
+    await streamView.flush(finalAnswer);
     messages.push({ role: 'assistant', content: finalAnswer, ts: Date.now() });
     await trimAndSaveMessages();
     if (autoTitle) await maybeAutoNameCurrentSession(autoTitle);
@@ -5902,6 +6127,11 @@ function bindEvents() {
   els.refreshSessionsButton.addEventListener('click', () => loadSessions());
   els.sessionSearchInput.addEventListener('input', () => renderSessionMenu(els.sessionSearchInput.value));
   els.closeSettingsButton.addEventListener('click', closeSettingsDialog);
+  els.messages.addEventListener('click', (event) => {
+    const image = event.target?.closest?.('img[data-slot="aui_generated-image"]');
+    if (!image) return;
+    openGeneratedImageLightbox(image);
+  });
   els.copyRemoteEnvButton?.addEventListener('click', async () => {
     const text = els.remoteEnvBlock?.textContent || remoteEnvBlockText();
     try {
@@ -5916,6 +6146,10 @@ function bindEvents() {
   });
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
+      if (document.querySelector('.generated-image-lightbox')) {
+        closeGeneratedImageLightbox();
+        return;
+      }
       if (!els.settingsDialog.hidden) closeSettingsDialog();
       closeFloatingPanels();
     }

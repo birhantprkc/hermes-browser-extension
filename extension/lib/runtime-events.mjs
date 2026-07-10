@@ -36,6 +36,43 @@ export function browserRuntimeEventName(name = '') {
   return EVENT_NAME_SET.has(alias) ? alias : 'runtime.unknown';
 }
 
+function assistantTextFromRunCompleted(data = {}, finalizedText = '') {
+  const messages = Array.isArray(data.messages) ? data.messages : [];
+  const assistantParts = [];
+  for (const message of messages) {
+    const content = message?.role === 'assistant' && message.content ? String(message.content).trim() : '';
+    if (content && !assistantParts.includes(content)) assistantParts.push(content);
+  }
+  if (!assistantParts.length && data.content) assistantParts.push(String(data.content).trim());
+  if (finalizedText) {
+    const intermediateParts = assistantParts.slice(0, -1);
+    const prefix = intermediateParts.join('\n\n');
+    if (!prefix || String(finalizedText).startsWith(`${prefix}\n\n`)) return String(finalizedText);
+    return `${prefix}\n\n${finalizedText}`;
+  }
+  return assistantParts.join('\n\n');
+}
+
+export function reduceAssistantStreamText(state = {}, event = {}) {
+  const current = {
+    text: String(state.text || ''),
+    finalized: Boolean(state.finalized),
+  };
+  const type = String(event.type || event.name || '').trim();
+  const data = event.data && typeof event.data === 'object' ? event.data : event;
+  if (type === BROWSER_RUNTIME_EVENT_NAMES.assistantDelta && data.delta && !current.finalized) {
+    return { ...current, text: `${current.text}${data.delta}` };
+  }
+  if (type === BROWSER_RUNTIME_EVENT_NAMES.assistantCompleted && data.content) {
+    return { text: String(data.content), finalized: true };
+  }
+  if (type === BROWSER_RUNTIME_EVENT_NAMES.runCompleted) {
+    const reconciled = assistantTextFromRunCompleted(data, current.finalized ? current.text : '');
+    return reconciled ? { ...current, text: reconciled } : current;
+  }
+  return current;
+}
+
 function redactEventPreview(value = '') {
   return String(value || '')
     .replace(/Authorization:\s*Bearer\s+[^\n]+/gi, 'Authorization: Bearer [REDACTED_BEARER]')

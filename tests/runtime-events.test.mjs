@@ -6,6 +6,7 @@ import {
   TOOL_EVENT_NAME_ALIASES,
   browserRuntimeEventName,
   normalizeBrowserRuntimeEvent,
+  reduceAssistantStreamText,
 } from '../extension/lib/runtime-events.mjs';
 
 test('browser runtime event names are stable and exclude browser control', () => {
@@ -50,4 +51,45 @@ test('normalizeBrowserRuntimeEvent maps current Hermes stream aliases to stable 
   assert.equal(finished.status, 'completed');
   assert.doesNotMatch(finished.preview, /Bearer demo/);
   assert.match(finished.preview, /Authorization: (?:Bearer \[REDACTED_BEARER\]|\*\*\*|\[REDACTED\])/);
+});
+
+test('final assistant.completed media content wins over raw deltas and run transcript history', () => {
+  const rawMedia = 'Yep.\n\nMEDIA:C:\\Users\\Jaybo\\generated.png';
+  const deliveredImage = 'Yep.\n\n![image](data:image/png;base64,aGVybWVz)';
+  let state = reduceAssistantStreamText({}, { type: 'assistant.delta', data: { delta: rawMedia } });
+  assert.equal(state.text, rawMedia);
+  assert.equal(state.finalized, false);
+
+  state = reduceAssistantStreamText(state, { type: 'assistant.completed', data: { content: deliveredImage } });
+  assert.equal(state.text, deliveredImage);
+  assert.equal(state.finalized, true);
+
+  state = reduceAssistantStreamText(state, {
+    type: 'run.completed',
+    data: { messages: [{ role: 'assistant', content: rawMedia }] },
+  });
+  assert.equal(state.text, deliveredImage);
+  assert.equal(state.finalized, true);
+
+  state = reduceAssistantStreamText(state, {
+    type: 'run.completed',
+    data: {
+      messages: [
+        { role: 'assistant', content: 'Let me generate that.' },
+        { role: 'tool', content: 'saved image' },
+        { role: 'assistant', content: rawMedia },
+      ],
+    },
+  });
+  assert.equal(state.text, `Let me generate that.\n\n${deliveredImage}`);
+  assert.equal(state.finalized, true);
+});
+
+test('run.completed remains a fallback when assistant.completed is absent', () => {
+  const state = reduceAssistantStreamText({}, {
+    type: 'run.completed',
+    data: { messages: [{ role: 'assistant', content: 'fallback transcript text' }] },
+  });
+  assert.equal(state.text, 'fallback transcript text');
+  assert.equal(state.finalized, false);
 });
