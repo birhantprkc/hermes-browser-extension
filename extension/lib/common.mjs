@@ -84,6 +84,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   maxTabs: 12,
   maxLocalMessages: 40,
   customModelSources: [],
+  trustedDashboardOrigin: '',
 });
 
 export const HERMES_BROWSER_SYSTEM_PROMPT = `You are Hermes running through the Hermes Browser Extension side panel.
@@ -169,7 +170,8 @@ export function isUsableRemoteApiUrl(value = '') {
 
 export function isUsableRemoteDashboardUrl(value = '') {
   try {
-    return new URL(String(value || '')).protocol === 'https:';
+    const parsed = new URL(String(value || ''));
+    return parsed.protocol === 'https:' && !parsed.username && !parsed.password;
   } catch {
     return false;
   }
@@ -186,7 +188,7 @@ export function gatewayConnectionSummary({ gatewayMode = DEFAULT_SETTINGS.gatewa
   const corsOrigin = origin || 'chrome-extension://<extension-id>';
   let setupHint;
   if (mode.value === 'remote-dashboard') {
-    setupHint = 'Remote dashboard over WebSocket. Sign in to it in a browser tab. No key needed. Add a key to use an API server instead.';
+    setupHint = 'Trusted Dashboard Attach over WebSocket. Keep the signed-in dashboard as your active tab, then use Test connection to approve its HTTPS origin. This mode stays Chat-only. No key needed.';
   } else if (mode.value === 'remote-api') {
     setupHint = `Remote API server. Set API_SERVER_ENABLED=true, API_SERVER_HOST=0.0.0.0, API_SERVER_KEY, and API_SERVER_CORS_ORIGINS=${corsOrigin} on the host. Same-LAN http://host:8642 is supported for trusted networks; use https:// for public/proxied hosts. Remote dashboard mode stays https/WebSocket and is selected when the key is blank.`;
   } else {

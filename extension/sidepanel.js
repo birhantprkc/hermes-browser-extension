@@ -80,7 +80,14 @@ import {
 } from './lib/common.mjs';
 import { extractYouTubeVideoId } from './lib/transcript.mjs';
 import { buildDashboardWsUrl, createGatewayClient, WS_EVENTS, WS_METHODS } from './lib/gateway-ws.mjs';
-import { mintWsTicket, ticketFailureHelp } from './lib/dashboard-bridge.mjs';
+import {
+  dashboardTrustPrompt,
+  findDashboardTab,
+  isTrustedDashboardOrigin,
+  mintWsTicket,
+  originOf,
+  ticketFailureHelp,
+} from './lib/dashboard-bridge.mjs';
 import {
   deriveStartupView,
   initialStartupReadiness,
@@ -137,6 +144,7 @@ import {
   CONTEXT_SCOPE_MODES,
   DEFAULT_CONTEXT_SCOPE,
   compactPinnedTitle,
+  contextScopeForGateway,
   contextScopeFromTab,
   filterPromptTabs,
   messageStorageKeyForScope,
@@ -336,6 +344,7 @@ let activeSessionRuntime = {
 // /api/ws JSON-RPC socket (the api_server REST/SSE surface is unavailable
 // cross-origin). This holds the live socket + the dashboard-assigned session id.
 let remoteWsConnection = null;
+let trustedDashboardTabId = null;
 let connectionProbeStatus = 'connecting';
 let connectionProbeDetail = '';
 let connectionProbeTimer = null;
@@ -514,6 +523,12 @@ function renderGatewayHelp() {
   });
   if (els.gatewayHelp) els.gatewayHelp.textContent = summary.setupHint;
   if (els.gatewayUrlInput) els.gatewayUrlInput.placeholder = summary.mode.defaultUrl || DEFAULT_SETTINGS.gatewayUrl;
+  const dashboardAttach = summary.mode.value === 'remote-dashboard';
+  for (const contextInput of [els.includeTabsInput, els.includePageTextInput, els.includeSelectedTextInput]) {
+    if (!contextInput) continue;
+    contextInput.disabled = dashboardAttach;
+    contextInput.title = dashboardAttach ? 'Trusted Dashboard Attach is Chat-only.' : '';
+  }
 }
 
 function remoteEnvBlockText() {
@@ -1085,7 +1100,7 @@ async function initializeSessionForPanelOpen({ focus = false } = {}) {
 }
 
 async function applyContextScope(nextScope, { ensureSession = false } = {}) {
-  contextScope = normalizeContextScope(nextScope);
+  contextScope = contextScopeForGateway(nextScope, settings.gatewayMode);
   previousConversationScope = conversationScopeForContextScope(contextScope, previousConversationScope);
   if (contextScope.mode !== CONTEXT_SCOPE_MODES.CHAT_ONLY) rememberConversationScope(contextScope);
   else saveConversationScopeForInstance();
@@ -4679,6 +4694,8 @@ async function loadSettings({ restoreMessages = false } = {}) {
       .filter(([, options]) => Boolean(options))),
     modelScopeVersion: DEFAULT_SETTINGS.modelScopeVersion,
   };
+  contextScope = contextScopeForGateway(contextScope, settings.gatewayMode);
+  saveContextScopeForInstance();
   const effectiveBinding = resolveBrowserEffectiveModel({
     sessionId: settings.sessionId,
     sessionModelBindings: settings.sessionModelBindings,
@@ -4766,6 +4783,9 @@ async function saveSettingsFromForm() {
     ...settings,
     gatewayMode,
     gatewayUrl,
+    trustedDashboardOrigin: isTrustedDashboardOrigin(gatewayUrl, settings.trustedDashboardOrigin)
+      ? settings.trustedDashboardOrigin
+      : '',
     apiKey,
     tokenSource,
     model: settings.model || DEFAULT_SETTINGS.model,
@@ -4788,6 +4808,12 @@ async function saveSettingsFromForm() {
     appearanceTheme: normalizeAppearanceTheme(settings.appearanceTheme),
     textSize: normalizeTextSize(settings.textSize),
   };
+  if (gatewayMode !== 'remote-dashboard' || !settings.trustedDashboardOrigin) {
+    trustedDashboardTabId = null;
+  }
+  if (gatewayMode === 'remote-dashboard' && contextScope.mode !== CONTEXT_SCOPE_MODES.CHAT_ONLY) {
+    await applyContextScope(contextScope, { ensureSession: false });
+  }
   applyAppearanceSettings();
   await chrome.storage.local.set({ hermesBrowserSettings: settings });
   await maybeRenameCurrentSessionTitle(previousSettings, settings.sessionTitle);
@@ -5629,10 +5655,45 @@ function applyTurnRuntimePayload(payload = {}) {
   applyPendingModelRuntimeAck(runtime);
 }
 
+async function requestDashboardOriginTrust(baseUrl) {
+  const origin = originOf(baseUrl);
+  if (!origin) throw new Error('Set a remote https gateway URL without embedded credentials before connecting.');
+  const tab = await findDashboardTab(chrome.tabs, origin);
+  if (!tab?.id) {
+    const error = new Error(ticketFailureHelp('no_dashboard_tab', origin));
+    error.ticketReason = 'no_dashboard_tab';
+    throw error;
+  }
+  if (isTrustedDashboardOrigin(baseUrl, settings.trustedDashboardOrigin)) {
+    trustedDashboardTabId = tab.id;
+    return origin;
+  }
+  const approved = globalThis.confirm?.(dashboardTrustPrompt(origin)) === true;
+  if (!approved) {
+    const error = new Error('Dashboard Attach was not approved. Open Settings → Test connection when you are ready to trust this origin.');
+    error.ticketReason = 'dashboard_origin_untrusted';
+    throw error;
+  }
+  trustedDashboardTabId = tab.id;
+  settings = { ...settings, trustedDashboardOrigin: origin };
+  await chrome.storage.local.set({ hermesBrowserSettings: settings });
+  return origin;
+}
+
 async function ensureRemoteWsClient() {
   const baseUrl = normalizeGatewayUrl(settings.gatewayUrl);
   if (!isUsableRemoteGatewayUrl(baseUrl)) {
     throw new Error('Set a remote https gateway URL in Settings before connecting.');
+  }
+  if (!isTrustedDashboardOrigin(baseUrl, settings.trustedDashboardOrigin)) {
+    const error = new Error('This dashboard origin is not trusted yet. Open Settings → Test connection to review and approve Dashboard Attach.');
+    error.ticketReason = 'dashboard_origin_untrusted';
+    throw error;
+  }
+  if (!Number.isFinite(trustedDashboardTabId)) {
+    const error = new Error('Select the signed-in dashboard tab, then use Settings → Test connection before attaching.');
+    error.ticketReason = 'dashboard_tab_unselected';
+    throw error;
   }
   if (remoteWsConnection?.client && remoteWsConnection.client.readyState === 1 && remoteWsConnection.baseUrl === baseUrl) {
     return remoteWsConnection;
@@ -5645,7 +5706,12 @@ async function ensureRemoteWsClient() {
   remoteWsConnection = null;
 
   console.info('[Hermes] remote: minting ws-ticket via dashboard tab for', baseUrl);
-  const ticket = await mintWsTicket({ tabsApi: chrome.tabs, scriptingApi: chrome.scripting, baseUrl });
+  const ticket = await mintWsTicket({
+    tabsApi: chrome.tabs,
+    scriptingApi: chrome.scripting,
+    baseUrl,
+    tabId: trustedDashboardTabId,
+  });
   if (!ticket.ok) {
     console.warn('[Hermes] remote: ws-ticket mint failed:', ticket.reason, ticket);
     const error = new Error(ticketFailureHelp(ticket.reason, ticket.origin));
@@ -6071,7 +6137,11 @@ async function askHermes(userText, turnAttachments = [...attachments]) {
   let shouldFlushQueue = false;
   try {
     const preparedAttachments = await saveImageAttachmentsForTurn(turnAttachments);
-    const context = await refreshContext();
+    const turnContextScope = contextScopeForGateway(contextScope, settings.gatewayMode);
+    const capturedContext = await refreshContext();
+    const context = turnContextScope.mode === CONTEXT_SCOPE_MODES.CHAT_ONLY
+      ? { activeTab: null, tabs: [], pageContext: null, contextScope: turnContextScope }
+      : capturedContext;
 
     // Detect /command at the start of userText and resolve to a command prompt.
     // Attachments are appended after command expansion so /summarize + file/text
@@ -6091,9 +6161,9 @@ async function askHermes(userText, turnAttachments = [...attachments]) {
     const displayUserText = preparedAttachments.length
       ? `${userText || 'Attachment-only turn.'}\n${preparedAttachments.map((attachment) => `${attachmentIcon(attachment.kind)} ${attachment.label}`).join('\n')}`
       : userText;
-    const promptTabs = filterPromptTabs(context.tabs, contextScope);
-    const selectedPromptTabs = Array.isArray(contextScope.selectedTabIds) ? promptTabs : undefined;
-    const contextHash = contextScope.mode === CONTEXT_SCOPE_MODES.CHAT_ONLY ? '' : browserContextPayloadHash({
+    const promptTabs = filterPromptTabs(context.tabs, turnContextScope);
+    const selectedPromptTabs = Array.isArray(turnContextScope.selectedTabIds) ? promptTabs : undefined;
+    const contextHash = turnContextScope.mode === CONTEXT_SCOPE_MODES.CHAT_ONLY ? '' : browserContextPayloadHash({
       activeTab: context.activeTab,
       selectedTabs: selectedPromptTabs || promptTabs,
       pageContext: context.pageContext,
@@ -6105,7 +6175,7 @@ async function askHermes(userText, turnAttachments = [...attachments]) {
       tabs: context.tabs,
       pageContext: context.pageContext,
       selectedTabs: selectedPromptTabs,
-      contextScope,
+      contextScope: turnContextScope,
       settings,
       contextHash,
     });
@@ -6234,6 +6304,7 @@ async function testConnection() {
       // from the extension origin, so the WebSocket is the only thing we can
       // exercise. Minting a ticket + opening the socket validates the whole
       // path: a signed-in dashboard tab, the ticket flow, and the handshake.
+      await requestDashboardOriginTrust(normalizeGatewayUrl(settings.gatewayUrl));
       const connection = await ensureRemoteWsClient();
       let modelNote = '';
       try {

@@ -492,12 +492,16 @@ test('gateway settings support explicit local and remote Hermes API servers', ()
   assert.equal(dashboard.mode.value, 'remote-dashboard');
   assert.match(dashboard.title, /Remote Hermes dashboard/);
   assert.match(dashboard.setupHint, /WebSocket/);
-  assert.match(dashboard.setupHint, /sign in/i);
+  assert.match(dashboard.setupHint, /Trusted Dashboard Attach/);
+  assert.match(dashboard.setupHint, /active tab/);
+  assert.match(dashboard.setupHint, /Test connection/);
+  assert.match(dashboard.setupHint, /Chat-only/);
 });
 
 test('isUsableRemoteGatewayUrl requires a parseable https URL', () => {
   assert.equal(isUsableRemoteGatewayUrl('https://kurokami.example.ts.net'), true);
   assert.equal(isUsableRemoteGatewayUrl('https://host.ts.net:8643/hermes'), true);
+  assert.equal(isUsableRemoteGatewayUrl('https://user:pass@host.ts.net/hermes'), false);
   assert.equal(isUsableRemoteGatewayUrl('http://host.ts.net'), false); // non-loopback http is mixed-content blocked
   assert.equal(isUsableRemoteGatewayUrl('example.com'), false); // no scheme, fails to parse
   assert.equal(isUsableRemoteGatewayUrl(''), false);
@@ -509,6 +513,20 @@ test('remote API URL validation allows trusted HTTP while dashboard stays HTTPS-
   assert.equal(isUsableRemoteApiUrl('ftp://host.ts.net'), false);
   assert.equal(isUsableRemoteDashboardUrl('https://dash.example.com'), true);
   assert.equal(isUsableRemoteDashboardUrl('http://dash.example.com'), false);
+});
+
+test('remote dashboard turns are wired through the chat-only gateway scope policy', () => {
+  const sidepanel = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
+  assert.match(sidepanel, /contextScopeForGateway/);
+  assert.match(sidepanel, /turnContextScope\s*=\s*contextScopeForGateway\(contextScope, settings\.gatewayMode\)/);
+  assert.match(sidepanel, /turnContextScope\.mode\s*===\s*CONTEXT_SCOPE_MODES\.CHAT_ONLY/);
+  assert.match(sidepanel, /contextScope:\s*turnContextScope/);
+  assert.match(sidepanel, /requestDashboardOriginTrust\(normalizeGatewayUrl\(settings\.gatewayUrl\)\)/);
+  assert.match(sidepanel, /isTrustedDashboardOrigin\(baseUrl, settings\.trustedDashboardOrigin\)/);
+  assert.match(sidepanel, /findDashboardTab\(chrome\.tabs, origin\)/);
+  assert.match(sidepanel, /tabId:\s*trustedDashboardTabId/);
+  assert.match(sidepanel, /contextInput\.disabled\s*=\s*dashboardAttach/);
+  assert.match(sidepanel, /contextScope\s*=\s*contextScopeForGateway\(contextScope, settings\.gatewayMode\);/);
 });
 
 test('manifest allows remote Hermes API server connections from extension pages', () => {
