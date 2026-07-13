@@ -5,7 +5,7 @@
 ### Fixed
 
 - Preserved remote dashboard conversations across WebSocket replacement by persisting the gateway's durable session identity, resuming it on reconnect, and routing follow-up RPCs through the fresh live session identity.
-- Added a side-panel confirmation gate for silent Chromium no-ops and an Arc/macOS bypass for hidden `SIDE_PANEL` contexts, routing failures through one reusable extension tab without duplicating tabs when a native panel actually opens.
+- Added a browser-agnostic confirmation gate for side-panel opens so Chromium forks that silently no-op can fall back to a working extension tab without duplicating tabs when a native panel actually opens.
 
 ### Contributors
 

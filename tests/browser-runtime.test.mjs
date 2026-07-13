@@ -80,8 +80,6 @@ test('side-panel confirmation rejects a silent no-op so the caller can use its t
 });
 
 function createBackgroundHarness({
-  arcPaletteMarker = false,
-  runtimeContexts = [],
   sidePanelOpen = async () => {},
   synchronizeFallbackQueries = false,
 } = {}) {
@@ -96,7 +94,7 @@ function createBackgroundHarness({
     runtime: {
       getManifest: () => ({ side_panel: { default_path: 'sidepanel.html' } }),
       getURL: (value) => `chrome-extension://test/${value}`,
-      getContexts: async () => runtimeContexts,
+      getContexts: async () => [],
       onInstalled: { addListener() {} },
       onStartup: { addListener() {} },
       onMessage: { addListener() {} },
@@ -112,24 +110,6 @@ function createBackgroundHarness({
     action: {
       setPopup: async () => {},
       onClicked: { addListener(handler) { actionHandler = handler; } },
-    },
-    scripting: {
-      executeScript: async ({ func }) => {
-        const originalDocument = globalThis.document;
-        const originalGetComputedStyle = globalThis.getComputedStyle;
-        globalThis.document = { documentElement: {} };
-        globalThis.getComputedStyle = () => ({
-          getPropertyValue: (property) => (property === '--arc-palette-title' && arcPaletteMarker ? '#ffffff' : ''),
-        });
-        try {
-          return [{ result: func() }];
-        } finally {
-          if (originalDocument === undefined) delete globalThis.document;
-          else globalThis.document = originalDocument;
-          if (originalGetComputedStyle === undefined) delete globalThis.getComputedStyle;
-          else globalThis.getComputedStyle = originalGetComputedStyle;
-        }
-      },
     },
     tabs: {
       query: async () => {
@@ -212,26 +192,6 @@ test('background action coalesces concurrent silent side-panel fallbacks', async
       harness.actionHandler(harness.activeTab),
     ]);
     assert.equal(harness.createdTabs.length, 1, 'concurrent fallback clicks must share one tab open');
-  } finally {
-    globalThis.chrome = originalChrome;
-  }
-});
-
-test('background action bypasses Arc hidden side-panel contexts and opens the extension tab', async () => {
-  const originalChrome = globalThis.chrome;
-  const panelUrl = 'chrome-extension://test/sidepanel.html?panel=tab&tabId=7';
-  const harness = createBackgroundHarness({
-    arcPaletteMarker: true,
-    runtimeContexts: [{ contextType: 'SIDE_PANEL', documentUrl: panelUrl, tabId: 7, windowId: 8 }],
-  });
-  globalThis.chrome = harness.chromeApi;
-
-  try {
-    await import(`../extension/background.js?arc-hidden-side-panel=${Date.now()}`);
-    assert.equal(typeof harness.actionHandler, 'function');
-    await harness.actionHandler(harness.activeTab);
-    assert.deepEqual(harness.sidePanelOpenCalls, [], 'Arc must bypass its non-visible sidePanel implementation');
-    assert.deepEqual(harness.createdTabs, [{ url: panelUrl, active: true }]);
   } finally {
     globalThis.chrome = originalChrome;
   }

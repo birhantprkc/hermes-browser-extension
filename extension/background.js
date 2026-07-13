@@ -108,30 +108,6 @@ function reapplyPanelResidencyForTab(tabId) {
 }
 
 const pendingPanelTabOpens = new Map();
-let arcBrowserDetected = false;
-
-async function isArcBrowserTab(tabId) {
-  if (arcBrowserDetected) return true;
-  if (!Number.isFinite(tabId) || tabId <= 0 || typeof chrome.scripting?.executeScript !== 'function') {
-    return false;
-  }
-
-  try {
-    const results = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: () => {
-        const root = globalThis.document?.documentElement;
-        if (!root || typeof globalThis.getComputedStyle !== 'function') return false;
-        return Boolean(globalThis.getComputedStyle(root).getPropertyValue('--arc-palette-title').trim());
-      },
-    });
-    arcBrowserDetected = results.some((entry) => entry?.result === true);
-    return arcBrowserDetected;
-  } catch {
-    // Restricted tabs cannot be probed. Continue with normal browser capability detection.
-    return false;
-  }
-}
 
 async function openOrFocusPanelTab(panelUrl) {
   const pendingOpen = pendingPanelTabOpens.get(panelUrl);
@@ -193,14 +169,6 @@ async function openHermesPanel(tab) {
   // Try Opera/Firefox native sidebar first.
   const opened = await openNativeSidebar({ windowId: tab?.windowId ?? null });
   if (opened) return;
-
-  // Arc exposes enough of chrome.sidePanel to create a SIDE_PANEL context but
-  // does not surface that context as visible UI. Its page palette marker is
-  // available on normal tabs even though Arc identifies itself as Chrome.
-  if (await isArcBrowserTab(tabId)) {
-    await openOrFocusPanelTab(panelUrl);
-    return;
-  }
 
   // Chrome/Edge/Comet sidePanel API
   const sidePanelCanOpen = Boolean(chrome.sidePanel?.open);
