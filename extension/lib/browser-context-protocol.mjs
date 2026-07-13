@@ -1,4 +1,5 @@
 import { formatPickedElementBlock, normalizePickedElement } from './element-picker.mjs';
+import { hasCredentialBearingUrl } from './redaction.mjs';
 
 export const BROWSER_CONTEXT_PROTOCOL_ID = 'hermes.browser.context.v1';
 
@@ -106,6 +107,7 @@ export function isRestrictedUrl(url = '') {
     return true;
   }
   if (RESTRICTED_SCHEMES.has(parsed.protocol)) return true;
+  if (hasCredentialBearingUrl(parsed)) return true;
   const haystack = restrictedUrlHaystack(parsed);
   return SENSITIVE_URL_PATTERNS.some((pattern) => pattern.test(haystack));
 }
@@ -276,14 +278,16 @@ export function buildBrowserContextPayload({
   const mergedSettings = protocolSettings(settings);
   const allTabs = Array.isArray(tabs) ? tabs.map(privacySafeTabForPrompt) : [];
   const scopedTabs = Array.isArray(selectedTabs) ? selectedTabs.map(privacySafeTabForPrompt) : allTabs;
+  const pinnedUrl = String(contextScope?.pinnedUrl || '');
+  const pinnedUrlRestricted = Boolean(pinnedUrl && isRestrictedUrl(pinnedUrl));
   return {
     protocol: BROWSER_CONTEXT_PROTOCOL_ID,
     contextScope: {
       mode: contextScope?.mode || 'follow-active',
       pinnedTabId: contextScope?.pinnedTabId ?? null,
       pinnedWindowId: contextScope?.pinnedWindowId ?? null,
-      pinnedTitle: String(contextScope?.pinnedTitle || ''),
-      pinnedUrl: String(contextScope?.pinnedUrl || ''),
+      pinnedTitle: pinnedUrlRestricted ? '(restricted tab)' : String(contextScope?.pinnedTitle || ''),
+      pinnedUrl: pinnedUrlRestricted ? '(omitted by privacy guard)' : pinnedUrl,
       selectedTabIds: Array.isArray(contextScope?.selectedTabIds) ? contextScope.selectedTabIds.map(Number).filter(Number.isFinite) : [],
     },
     settings: {

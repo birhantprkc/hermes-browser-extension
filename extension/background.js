@@ -174,6 +174,18 @@ async function openHermesPanel(tab) {
   await chrome.tabs.create({ url: chrome.runtime.getURL(panelPath) });
 }
 
+async function openHermesFullView(requestedUrl = '') {
+  const packagedAppUrl = new URL(chrome.runtime.getURL('app.html'));
+  const rootDevAppUrl = new URL(chrome.runtime.getURL('extension/app.html'));
+  const targetUrl = new URL(String(requestedUrl || packagedAppUrl.href));
+  const allowedPaths = new Set([packagedAppUrl.pathname, rootDevAppUrl.pathname]);
+  if (targetUrl.origin !== packagedAppUrl.origin || !allowedPaths.has(targetUrl.pathname)) {
+    throw new Error('Refused to open a non-Hermes full-view URL.');
+  }
+  await chrome.tabs.create({ url: targetUrl.href, active: true });
+  return { ok: true };
+}
+
 function timeoutSignal(ms = 5000) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), ms);
@@ -286,8 +298,13 @@ chrome.storage?.onChanged?.addListener?.((changes, areaName) => {
   }
 });
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type !== 'HERMES_GET_YOUTUBE_TRANSCRIPT') return false;
-  getYoutubeTranscript(message)
+  const action = message?.type === 'HERMES_OPEN_FULL_VIEW'
+    ? openHermesFullView(message.url)
+    : message?.type === 'HERMES_GET_YOUTUBE_TRANSCRIPT'
+      ? getYoutubeTranscript(message)
+      : null;
+  if (!action) return false;
+  action
     .then(sendResponse)
     .catch((error) => sendResponse({ ok: false, reason: error?.message || String(error) }));
   return true;

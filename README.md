@@ -9,7 +9,7 @@ Browser-native side panel for [Hermes Agent](https://hermes-agent.nousresearch.c
 </p>
 
 <p align="center">
-  <strong>Public alpha v0.1.10 · Load unpacked · Local / Hermes Cloud / Remote · Full Hermes runtime tools</strong><br />
+  <strong>Public alpha v0.1.11 · Load unpacked · Local / Hermes Cloud / Remote · Full Hermes runtime tools</strong><br />
   Not on the Chrome Web Store yet.
 </p>
 
@@ -27,8 +27,33 @@ This repo is specifically for the **Hermes Browser Extension**: the Chrome/Edge/
 | Browser behavior | Page-only context | Hermes compatibility |
 | <img src="./assets/readme/hermes-browser-browser-behavior.png" alt="Hermes Browser Extension browser behavior settings for auto naming, prompt context, and tab-attached panels" width="300" /> | <img src="./assets/readme/hermes-browser-context-scope.png" alt="Hermes Browser Extension context scope menu with Chat only, Follow active tab, and Page only controls" width="300" /> | <img src="./assets/readme/hermes-browser-compatibility.png" alt="Hermes Browser Extension compatibility panel showing fallback modes and connection security" width="300" /> |
 
+### Hermes Web
+
+Open the extension's full view for canonical Hermes sessions, model/runtime control, rich messages, generated media, and accurate session context telemetry in a browser-native workspace.
+
+Hermes Web Alpha currently uses token-backed **Local or Remote API** connections. Hermes Cloud Preview and ticketed remote-dashboard transports remain Chat-only in the side panel; live full-view dashboard handoff is not shipped yet.
+
+<p align="center">
+  <img src="./assets/readme/hermes-web-new-session.png" alt="Hermes Web in Nous Light mode showing a connected new-session workspace with session rail, composer, and context inspector" width="100%" />
+</p>
+
+<p align="center"><strong>Start a fresh canonical Hermes Web session</strong></p>
+
+<p align="center">
+  <img src="./assets/readme/hermes-web-settings-nine-themes.png" alt="Hermes Web settings in Nous Light mode showing all nine appearance themes" width="100%" />
+</p>
+
+<p align="center"><strong>Choose from nine themes with Light and Dark modes</strong></p>
+
+<p align="center">
+  <img src="./assets/readme/hermes-web-rich-chat.png" alt="Hermes Web in Nous Light mode showing user messages on the right, Hermes messages on the left, rich Markdown, a table, session rail, composer, and context meter" width="100%" />
+</p>
+
+<p align="center"><strong>Read rich Hermes responses while canonical history stays attached</strong></p>
+
 ## Highlights
 
+- Adds **Hermes Web Alpha**, a full-page browser workspace for canonical Hermes sessions with a session rail, user-right/Hermes-left messages, safe rich Markdown, model/runtime controls, tools, skills, attachments, voice, active-run steering, generated media, and a context/activity/diagnostics inspector.
 - Chrome/Edge/Chromium MV3 side panel powered by the Side Panel API.
 - Matches Hermes Desktop's three connection choices: **Local gateway**, **Hermes Cloud**, and **Remote gateway**.
 - Connects to a configurable local or self-hosted remote Hermes API server. Default: `http://127.0.0.1:8642`.
@@ -37,7 +62,7 @@ This repo is specifically for the **Hermes Browser Extension**: the Chrome/Edge/
 - Auto-syncs connected Hermes providers/models, profiles, skills, sessions, and capabilities.
 - Keeps runtime plugins available in the same Hermes session. For example, a connected social or messaging plugin can add account, post, and trend context while the extension supplies browser-page context.
 - Shows a Hermes compatibility panel so older gateways degrade into explicit fallback/manual modes instead of broken route errors.
-- Adds **Copy Diagnostics** for v0.1.10 support reports: browser family, version/build, extension origin, gateway origin, capability flags, context mode, selected model/provider, and last visible error with tokens/page content stripped.
+- Adds **Copy Diagnostics** for v0.1.11 support reports: browser family, version/build, extension origin, gateway origin, capability flags, context mode, selected model/provider, and last visible error with tokens/page content stripped.
 - Adds an optional **Hermes Browser Companion Plugin** that passively caches sanitized Browser Context Protocol metadata for Hermes tools/hooks without browser control, network calls, or API-server routes.
 - Adds `/meta` / `/metadata` / `/head` for truthful captured-page metadata analysis: it reports only what the Browser context actually contains and explicitly calls out metadata classes that were not captured.
 - Adds session controls for Browser work: create/switch sessions, copy session IDs, rename sessions, smart first-message titles, and compact on-brand session actions.
@@ -55,28 +80,32 @@ This repo is specifically for the **Hermes Browser Extension**: the Chrome/Edge/
 - Supports voice dictation through Hermes audio transcription when available, with Browser speech fallback when the connected runtime does not expose STT.
 - Wraps webpage text as untrusted context before sending it to Hermes.
 - Streams Hermes responses and falls back to non-streaming chat when needed.
-- Includes Desktop-style appearance settings: Light/Dark/System mode plus Nous, Midnight, Ember, Mono, Cyberpunk, and Slate themes.
+- Includes Desktop-style appearance settings with Light/Dark/System mode and nine themes: Nous, Midnight, Ember, Mono, Cyberpunk, Slate, Senter Space, Aphrodite, and Solstice.
+- Adds generated-image reveal animation plus a lightbox with zoom, reset, open, and explicit download controls.
+- Omits credential-bearing tab URLs from prompt-facing context, including decoded/nested query or hash parameters and common signed-URL credentials/signatures.
 - Includes a localhost agent picker for switching between trusted local Hermes API gateway ports.
-- No `debugger`, `nativeMessaging`, click/type/form-submit, cookies, history, bookmarks, downloads, or browser-control permissions in v0.1.
+- No `debugger`, `nativeMessaging`, click/type/form-submit, cookies, history, bookmarks, or browser-control permissions in v0.1. The `downloads` permission is used only when the user explicitly saves generated images or artifacts.
 
 ## Requirements
 
 - Hermes Agent installed and working.
 - For Local or Remote API mode: Hermes Gateway/API server enabled locally or on a reachable remote machine. Hermes Cloud instead requires a signed-in HTTPS agent tab.
 - Node.js 20+.
-- Chrome, Edge, Brave, Comet, or another Chromium browser with Side Panel API support (Chrome 114+ baseline).
+- Chrome, Edge, Brave, Comet, or another Chromium browser with Side Panel API support (Chrome 114+ baseline). Firefox is available as a preview package through `npm run build:firefox`.
 
-## v0.1.10 compatibility matrix
+## v0.1.11 compatibility matrix
 
-| Surface | Supported in v0.1.10 | Fallback / note |
+| Surface | Supported in v0.1.11 | Fallback / note |
 | --- | --- | --- |
 | Chrome / Edge / Chromium 114+ side panel | Yes | Primary public support target. |
 | Brave / Comet / Chromium forks | Best-effort | Must expose the Chromium Side Panel API and extension clipboard permissions for Copy Diagnostics. |
-| Firefox / Safari | Preview only | Diagnostics now report browser family, but cross-browser support is not shipped yet. |
+| Firefox | Preview package | `npm run build:firefox` produces `dist/firefox/` with Firefox-specific manifest adaptation. Chrome/Edge/Chromium remain the primary public support target. |
+| Safari | Not shipped | Browser-family diagnostics exist, but no Safari package is included. |
 | Local Hermes API server | Yes | Default path: `http://127.0.0.1:8642`. |
 | Hermes Cloud | Yes, Trusted Dashboard Attach | Requires an active signed-in HTTPS Hermes Cloud agent tab. Uses a single-use WebSocket ticket and enforces Chat-only context. This is not a general cookie import or background account-discovery flow. |
 | Remote API server | Yes, explicit URL/token only | Use trusted LAN/Tailscale/VPN or HTTPS reverse proxy; do not expose Hermes naked to the internet. |
 | Self-hosted remote dashboard WebSocket | Best-effort | Select Remote gateway with an HTTPS dashboard URL and no API key. Chat/session/model path only; REST-only profile/skills/image-upload surfaces remain unavailable. |
+| Hermes Web full view | Local/Remote API alpha | Requires a token-backed Local or Remote API connection. Cloud Preview and ticketed remote-dashboard transports remain Chat-only in the side panel. |
 | Browser Context Protocol | Yes | Extension emits `hermes.browser.context.v1` payloads and keeps prompt-embedded fallback. |
 | Companion plugin | Optional functional context cache | `companion-plugin/` provides read-only tools/hooks for sanitized Browser context; not required for normal extension use. |
 | Browser control / Runs UI / debugger / nativeMessaging | No | Deferred until supportability, action policy, approvals, and logs exist. |
@@ -188,18 +217,20 @@ In the extension side panel:
 
 With a key present, Remote means **Remote API server** and does not force HTTPS. With the key blank, Remote means **Remote dashboard WebSocket** and requires an `https://` dashboard URL.
 
-### Hermes Cloud
+### Hermes Cloud Preview
 
-Hermes Cloud uses **Trusted Dashboard Attach** in v0.1.10:
+Hermes Cloud Preview uses **Trusted Dashboard Attach**:
 
 1. Open your Hermes Cloud agent in a normal browser tab and sign in.
 2. Keep that fully loaded HTTPS agent tab active.
-3. Open extension Settings and choose **Hermes Cloud**.
-4. Click **Test connection**.
+3. Open extension Settings and choose **Hermes Cloud Preview**.
+4. Click **Connect to Hermes** or **Test connection**.
 
-The extension binds trust to that exact tab and HTTPS origin, mints a short-lived single-use WebSocket ticket in the page, and waits for Hermes' `gateway.ready` event before reporting success. The ticket is kept in memory only and is discarded if the tab navigates, is replaced, or changes origin.
+The extension binds trust to that exact active tab and HTTPS origin, verifies the tab again before minting, mints a short-lived single-use WebSocket ticket in the page, and verifies the WebSocket handshake before reporting success. The ticket is kept in memory only and is never persisted or logged. Cloud never falls back to localhost or a stored Local API token.
 
 Hermes Cloud is **Chat-only** in this release. Browser page text, selected text, open-tab context, and attachments are disabled for this mode. The extension does not read dashboard cookies, store a Cloud password, or add `cookies` or `nativeMessaging` permissions.
+
+If the connected Cloud agent does not expose `/api/auth/ws-ticket`, `/api/ws`, or the required session/model RPC methods, the extension reports the missing capability and leaves Local/Remote settings untouched. Update that agent's Hermes runtime using the [official Hermes Agent installation and update docs](https://hermes-agent.nousresearch.com/docs/getting-started/installation). It never redirects Cloud to `127.0.0.1` as a fallback.
 
 ### Self-hosted remote dashboard mode, no API server
 
@@ -225,6 +256,15 @@ After a Local or Remote API connection, the side panel loads from the connected 
 
 The DOM/context chip should show a non-zero page-context count on normal readable pages. Browser internal pages such as `chrome://extensions` are intentionally restricted.
 
+### Context window and compaction
+
+Context compression remains owned by Hermes Agent, using each runtime's effective `context_length` and configured compression threshold. The Browser and Web surfaces display the authoritative persisted/live fields when available: `last_prompt_tokens`, `threshold_tokens`, `context_length`, `usage_percent`, and `compression_count`.
+
+- The extension does not hardcode an 85% threshold; it honors the connected user's/runtime's value.
+- Reaching the threshold is shown as **Compaction due on the next Hermes turn**. Hermes performs its normal pre-model-call compression and the client refreshes telemetry afterward.
+- Legacy sessions already beyond a model limit are labeled honestly and allowed to recover through Hermes' pre-turn compressor.
+- Older gateways without runtime telemetry use a clearly labeled local estimate. The client never treats cumulative lifetime token spend as live prompt context and never truncates/summarizes canonical history itself.
+
 ## Install with Hermes / Computer Use
 
 You can ask Hermes to help install it:
@@ -242,8 +282,9 @@ Hermes Browser Extension is intentionally conservative in v0.1:
 - Cloud/dashboard-ticket connections are Chat-only and cannot send browser page text, selected text, open-tab context, or attachments.
 - Strong bearer/API key required for API access.
 - Page content is wrapped as untrusted context before it reaches Hermes.
+- Credential-bearing URLs are omitted from active, selected, open-tab, pinned-scope, prompt, receipt, and payload-hash surfaces.
 - Read-only browser context capture: no click, type, form-submit, checkout, download, or browser-control behavior.
-- No `debugger`, `nativeMessaging`, `cookies`, `history`, `downloads`, or `bookmarks` permissions.
+- No `debugger`, `nativeMessaging`, `cookies`, `history`, or `bookmarks` permissions. `downloads` is limited to explicit user-requested generated-image/artifact saves.
 - Restricted pages include browser internals, extension pages, and obvious banking/crypto/password/payment/health/government-tax categories.
 
 See [`SECURITY.md`](SECURITY.md), [`PERMISSIONS.md`](PERMISSIONS.md), [`DATA-FLOW.md`](DATA-FLOW.md), and [`PRIVACY.md`](PRIVACY.md) for details.
@@ -256,14 +297,14 @@ Make sure you loaded `dist/`, not the repo root. The selected folder must contai
 
 ### Chrome still shows an older version after updating
 
-The browser is still using an old unpacked folder or an unpacked extension card that was not reloaded. For v0.1.10, the source manifest, built `dist/` manifest, and release archive should all contain `manifest.json` version `0.1.10`.
+The browser is still using an old unpacked folder or an unpacked extension card that was not reloaded. For v0.1.11, the source manifest, built `dist/` manifest, and release archive should all contain `manifest.json` version `0.1.11`.
 
 Fix:
 
-1. Extract/download the v0.1.10 release or run `npm run build` locally.
+1. Extract/download the v0.1.11 release or run `npm run build` locally.
 2. Open `chrome://extensions` or `edge://extensions`.
 3. On the Hermes Browser Extension card, click **Reload**.
-4. If it still shows an older version, click **Remove**, then **Load unpacked** again and select the fresh v0.1.10 `dist/` folder.
+4. If it still shows an older version, click **Remove**, then **Load unpacked** again and select the fresh v0.1.11 `dist/` folder.
 5. Click **service worker** / **Inspect views** only for debugging; it is not the version source.
 
 ### Filing a support issue
@@ -286,7 +327,7 @@ If `/v1/models` fails, check `API_SERVER_KEY`, the extension's stored API key/br
 
 ### The side panel shows a runtime warning but still says connected
 
-v0.1.10 separates gateway reachability from upstream Hermes runtime/tool failures. If `/health` works but Hermes raises a runtime traceback, the Browser stays connected and shows the warning instead of turning the whole connection red.
+v0.1.11 separates gateway reachability from upstream Hermes runtime/tool failures. If `/health` works but Hermes raises a runtime traceback, the Browser stays connected and shows the warning instead of turning the whole connection red.
 
 For tracebacks like `int() argument must be a string, a bytes-like object or a real number, not 'NoneType'`, check the Hermes Agent logs on the machine running the gateway. If the traceback mentions `computer_use` or `cua-driver`, run:
 
@@ -410,6 +451,9 @@ Project layout:
 ```text
 extension/
   manifest.json       MV3 extension manifest
+  app.html            Hermes Web full-page workspace
+  app.css             Hermes Web shell and conversation styling
+  app.js              canonical sessions, models, tools, media, and full-view runtime
   background.js       side panel behavior
   content.js          page context collector
   sidepanel.html      side panel UI
@@ -424,10 +468,14 @@ extension/
   lib/support-diagnostics.mjs redacted Copy Diagnostics support report helpers
   lib/connection-modes.mjs versioned Local / Cloud / Remote schema and compatibility migration
   lib/connection-controller.mjs generation-safe connection state controller
+  lib/connection-dispatch.mjs maps Local / Cloud / Remote settings to the correct connect action
+  lib/cloud-agent-tab.mjs trusted signed-in Cloud tab selection and validation
+  lib/image-viewer.mjs generated-image lightbox state and zoom controls
   lib/common.mjs      shared prompt/context/security utilities
 companion-plugin/     optional fail-soft Browser companion plugin with read-only context cache tools/hooks
 scripts/
   build.mjs           copies extension/ to dist/
+  build-firefox.mjs   produces the Firefox preview package at dist/firefox/
   check-manifest.mjs  validates required manifest assets/permissions
   hermes-review-github-event.mjs PR/issue event runner for GitHub Actions/webhooks
   hermes-review-watch.mjs local PR/issue review poller

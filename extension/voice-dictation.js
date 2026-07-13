@@ -211,16 +211,12 @@ async function publishTranscript(transcript, source = 'voice-dictation-page') {
     source,
     ts: Date.now(),
   };
-  try {
-    const response = await chrome.runtime.sendMessage(payload);
-    if (response?.ok) {
-      await chrome.storage.local.remove(VOICE_DRAFT_STORAGE_KEY);
-      return;
-    }
-  } catch {
-    // Side panel may be closed; fall back to storage for next sidepanel load.
-  }
   await chrome.storage.local.set({ [VOICE_DRAFT_STORAGE_KEY]: payload });
+  try {
+    await chrome.runtime.sendMessage(payload);
+  } catch {
+    // Storage is the durable cross-surface return path; runtime messaging is an immediate optimization.
+  }
 }
 
 function isMicrophoneBlocked(error) {

@@ -4,7 +4,7 @@ import {
 } from './browser-context-protocol.mjs';
 import { formatPickedElementBlock } from './element-picker.mjs';
 import { normalizeImageAspectRatio, resolveImageSource } from './image-render.mjs';
-import { redactSensitiveText } from './redaction.mjs';
+import { hasCredentialBearingUrl, redactSensitiveText } from './redaction.mjs';
 import { CONNECTION_SCHEMA_VERSION, CONNECTION_TRANSPORTS } from './connection-modes.mjs';
 export { redactSensitiveText };
 
@@ -639,17 +639,19 @@ export function contextMeterDisplay({ accounting = {}, runtimeLabel = '', modelC
   const contextLimitTokens = firstPositiveToken(accounting?.contextLimitTokens, modelContextTokens);
   const meter = formatContextMeter({ estimatedTokens: liveContextTokens, modelContextTokens: contextLimitTokens });
   const hasRuntimeUsage = accounting?.source === 'runtime';
+  const hasPersistedSessionUsage = accounting?.source === 'session';
+  const hasSessionUsage = hasRuntimeUsage || hasPersistedSessionUsage;
   const sourceLabel = hasRuntimeUsage
     ? `runtime${runtimeLabel ? ` · ${runtimeLabel}` : ''}`
-    : 'runtime session usage unavailable';
-  const contextLabel = hasRuntimeUsage ? 'session context' : 'next request estimate';
+    : (hasPersistedSessionUsage ? 'persisted session telemetry' : 'runtime session usage unavailable');
+  const contextLabel = hasSessionUsage ? 'session context' : 'next request estimate';
   const usedLabel = formatWholeNumber(liveContextTokens);
   const limitLabel = formatWholeNumber(contextLimitTokens);
   const detail = contextLimitTokens
     ? `${usedLabel} / ${limitLabel} ${contextLabel} · ${meter.percentLabel} · ${sourceLabel}`
     : `${usedLabel} ${contextLabel} tokens · unknown max context · ${sourceLabel}`;
   const title = contextLimitTokens
-    ? (hasRuntimeUsage
+    ? (hasSessionUsage
       ? `${usedLabel} session context tokens used of ${limitLabel} available (${meter.percentLabel}, ${sourceLabel}).`
       : `Next request estimate: ${usedLabel} tokens of ${limitLabel} available (${meter.percentLabel}; ${sourceLabel}).`)
     : `${usedLabel} ${contextLabel} tokens estimated. Selected/effective model did not report a max context window (${sourceLabel}).`;
@@ -1269,6 +1271,74 @@ export function contextAccountingSnapshot({
   };
 }
 
+export function contextCompactionState({ accounting = {}, runtime = {}, session = {} } = {}) {
+  const usedTokens = firstPositiveToken(accounting?.liveContextTokens);
+  const contextLimitTokens = firstPositiveToken(
+    accounting?.contextLimitTokens,
+    runtime?.context_length,
+    runtime?.contextLength,
+    session?.contextLength,
+    session?.context_length,
+  );
+  const thresholdTokens = firstPositiveToken(
+    runtime?.threshold_tokens,
+    runtime?.thresholdTokens,
+    session?.thresholdTokens,
+    session?.threshold_tokens,
+  );
+  const compressionCountValue = runtime?.compression_count
+    ?? runtime?.compressionCount
+    ?? session?.compressionCount
+    ?? session?.compression_count;
+  const explicitCompressionCountKnown = runtime?.compression_count_known
+    ?? runtime?.compressionCountKnown
+    ?? session?.compressionCountKnown
+    ?? session?.compression_count_known;
+  const compressionCountKnown = typeof explicitCompressionCountKnown === 'boolean'
+    ? explicitCompressionCountKnown
+    : compressionCountValue !== undefined && compressionCountValue !== null && compressionCountValue !== '';
+  const compressionCount = Math.max(0, Number(compressionCountValue ?? 0) || 0);
+  const thresholdPercent = contextLimitTokens > 0
+    ? Math.round((thresholdTokens / contextLimitTokens) * 1000) / 10
+    : 0;
+
+  let state = 'unknown';
+  let detail = 'Waiting for authoritative Hermes context telemetry.';
+  if (usedTokens > 0 && contextLimitTokens > 0) {
+    if (usedTokens > contextLimitTokens) {
+      state = 'over-limit';
+      detail = 'Legacy session is over the model limit. Hermes will compact and recover before the next model call.';
+    } else if (thresholdTokens > 0 && usedTokens >= thresholdTokens) {
+      state = 'due';
+      detail = 'Compaction due on the next Hermes turn.';
+    } else if (thresholdTokens > 0) {
+      state = 'healthy';
+      detail = `Hermes will compact automatically at ${thresholdPercent}% of this context window.`;
+    } else if (accounting?.source === 'local-estimate') {
+      state = 'unknown';
+      detail = 'This is a local next-request estimate. Hermes did not report session compaction telemetry.';
+    } else if (accounting?.source === 'session') {
+      state = 'unknown';
+      detail = 'Persisted session usage is available, but the automatic compaction trigger telemetry is unavailable.';
+    } else {
+      state = 'unknown';
+      detail = 'Live session usage is available, but the automatic compaction trigger telemetry is unavailable.';
+    }
+  }
+
+  return {
+    state,
+    usedTokens,
+    contextLimitTokens,
+    thresholdTokens,
+    thresholdPercent,
+    compressionCount,
+    compressionCountKnown,
+    source: String(accounting?.source || 'unknown'),
+    detail,
+  };
+}
+
 export function composerKeyAction(event = {}, state = {}) {
   if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return 'none';
   const explicitSteer = Boolean(event.ctrlKey || event.metaKey);
@@ -1795,6 +1865,8 @@ export function normalizeHermesSessions(payload = {}) {
       thresholdTokens: Number(session.threshold_tokens || session.thresholdTokens || 0),
       usagePercent: Number(session.usage_percent || session.usagePercent || 0),
       compressionCount: Number(session.compression_count || session.compressionCount || 0),
+      compressionCountKnown: (session.compression_count ?? session.compressionCount) !== undefined
+        && (session.compression_count ?? session.compressionCount) !== null,
       lastActive: Number(session.last_active || session.started_at || session.updated_at || 0),
       parentSessionId: session.parent_session_id || null,
     }))
@@ -1935,6 +2007,7 @@ export function isRestrictedUrl(url = '') {
     return true;
   }
   if (RESTRICTED_SCHEMES.has(parsed.protocol)) return true;
+  if (hasCredentialBearingUrl(parsed)) return true;
   const haystack = restrictedUrlHaystack(parsed);
   return SENSITIVE_URL_PATTERNS.some((pattern) => pattern.test(haystack));
 }

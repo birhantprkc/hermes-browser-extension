@@ -140,6 +140,23 @@ test('normalizeGatewayCapabilities degrades missing capability routes into a leg
   assert.match(caps.warnings.join('\n'), /404/);
 });
 
+test('manual context compaction stays disabled when a gateway advertises only a feature flag with no endpoint', () => {
+  const caps = normalizeGatewayCapabilities({
+    object: 'hermes.api_server.capabilities',
+    platform: 'hermes-agent',
+    features: {
+      session_context: true,
+      session_compress: true,
+    },
+    endpoints: {
+      sessions: { method: 'GET', path: '/api/sessions' },
+    },
+  }, { healthOk: true, hasApiKey: true });
+
+  assert.equal(caps.sessionContext, true, 'persisted session telemetry remains available');
+  assert.equal(caps.sessionCompress, false, 'the UI must not call a missing /compress route');
+});
+
 test('capabilityStatusRows turn capabilities into compatibility-panel statuses', () => {
   const rows = capabilityStatusRows(normalizeGatewayCapabilities(null, { healthOk: true, hasApiKey: true }), {
     browserSpeechAvailable: true,

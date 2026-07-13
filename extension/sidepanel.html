@@ -6,27 +6,33 @@
     <title>Hermes Browser Extension</title>
     <link rel="icon" href="assets/icons/icon-32.png" />
     <link rel="stylesheet" href="sidepanel.css" />
+    <link rel="stylesheet" href="sidepanel-themes.css" />
   </head>
   <body>
     <main class="shell">
       <header class="topbar" aria-label="Hermes Browser Extension header">
-        <div class="brand-mini" aria-label="Hermes Agent">
-          <strong>HERMES<br />AGENT</strong>
-        </div>
+        <div class="brand-mini" aria-label="Hermes Agent"><span class="brand-mini-mark" aria-hidden="true"></span></div>
         <button id="sessionMenuButton" class="session-menu-button" type="button" aria-haspopup="dialog" aria-expanded="false">
           <span id="currentSessionName">Hermes Browser Extension</span>
           <span aria-hidden="true">⌄</span>
         </button>
         <button id="newSessionButton" class="settings-button icon-button" type="button" title="New Hermes Browser Extension session" aria-label="New session">+</button>
-        <div class="topbar-status">
-          <span id="connectionPill" class="connection-pill" role="status" aria-label="Hermes connection status" title="Hermes connection status">●</span>
-        </div>
+        <button id="openFullViewButton" class="settings-button icon-button" type="button" title="Open Hermes Web in a full tab" aria-label="Open full view">
+          <svg class="web-view-icon" aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none">
+            <circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.7"/>
+            <path d="M4.5 12h15M12 4c2.1 2.2 3.2 4.9 3.2 8S14.1 17.8 12 20M12 4c-2.1 2.2-3.2 4.9-3.2 8S9.9 17.8 12 20" stroke="currentColor" stroke-width="1.45" stroke-linecap="square"/>
+          </svg>
+          <span class="sr-only">Open full view</span>
+        </button>
         <button id="settingsButton" class="settings-button icon-button" type="button" title="Settings" aria-label="Open settings">
           <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16">
             <path d="M12 8.3a3.7 3.7 0 1 1 0 7.4 3.7 3.7 0 0 1 0-7.4Zm7.3 3.7c0-.5-.1-1-.2-1.5l2-1.5-2-3.5-2.4 1a8.5 8.5 0 0 0-2.6-1.5L13.8 2H10l-.4 3a8.5 8.5 0 0 0-2.6 1.5l-2.4-1-2 3.5 2 1.5a8.5 8.5 0 0 0 0 3l-2 1.5 2 3.5 2.4-1a8.5 8.5 0 0 0 2.6 1.5l.4 3h3.8l.4-3a8.5 8.5 0 0 0 2.6-1.5l2.4 1 2-3.5-2-1.5c.1-.5.2-1 .2-1.5Z" fill="currentColor"/>
           </svg>
           <span class="sr-only">Settings</span>
         </button>
+        <div class="topbar-status">
+          <span id="connectionPill" class="connection-pill" role="status" aria-label="Hermes connection status" title="Hermes connection status">●</span>
+        </div>
       </header>
 
       <section id="sessionMenu" class="session-menu" role="dialog" aria-label="Open Hermes session" hidden>
@@ -184,6 +190,9 @@
             <span>CONTEXT WINDOW</span>
             <strong id="contextUsageDetail">Refresh context to calculate the next prompt payload.</strong>
           </header>
+          <p class="context-section-label">Session runtime</p>
+          <dl id="contextRuntimeBreakdown" class="context-runtime-breakdown"></dl>
+          <p class="context-section-label">Next prompt payload</p>
           <dl id="contextBreakdown"></dl>
           <div class="context-control-row">
             <span id="contextControlStatus">Native context controls unavailable.</span>
@@ -320,8 +329,8 @@
             <span class="conn-mode-desc">Hermes on this machine. Default and offline-capable.</span>
           </button>
           <button class="conn-mode-card" type="button" data-connection-mode="cloud" role="radio" aria-checked="false">
-            <span class="conn-mode-head"><span class="conn-mode-title">Hermes Cloud</span><span class="conn-mode-check" aria-hidden="true"></span></span>
-            <span class="conn-mode-desc">Connect through a signed-in Hermes Cloud agent tab.</span>
+            <span class="conn-mode-head"><span class="conn-mode-title">Hermes Cloud Preview</span><span class="conn-mode-check" aria-hidden="true"></span></span>
+            <span class="conn-mode-desc">Attach the active signed-in Hermes Cloud agent tab with a one-use ticket.</span>
           </button>
           <button class="conn-mode-card" type="button" data-connection-mode="remote" role="radio" aria-checked="false">
             <span class="conn-mode-head"><span class="conn-mode-title">Remote gateway</span><span class="conn-mode-check" aria-hidden="true"></span></span>
@@ -339,10 +348,11 @@
           </select>
         </div>
 
-        <label>
+        <label id="gatewayUrlField">
           Gateway URL
           <input id="gatewayUrlInput" name="gatewayUrl" type="url" placeholder="http://127.0.0.1:8642" />
         </label>
+        <p id="cloudPreviewHelp" class="hint" hidden>Open the signed-in Hermes Cloud agent in the active tab, wait for it to finish loading, then choose Connect to Hermes. No API token or localhost fallback is used.</p>
         <p id="gatewayHelp" class="hint">Local setup: keep Hermes Gateway/API Server running on this machine.</p>
 
         <label id="apiKeyField">

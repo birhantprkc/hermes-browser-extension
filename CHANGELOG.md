@@ -1,6 +1,42 @@
 # Changelog
 
-## v0.1.10 — 2026-07-07
+## [0.1.11] - 2026-07-13
+
+### Added
+
+- Added **Hermes Web Alpha**, a full-page browser workspace backed by canonical Hermes sessions, with a session rail, user-right/Hermes-left messages, safe rich Markdown, model/runtime controls, tools, skills, attachments, voice, active-run steering, generated media, and context/activity inspection.
+- Added three explicit connection modes: **Local gateway**, **Hermes Cloud Preview**, and **Remote gateway**, with deterministic dispatch, migration, validation, and mode-specific settings copy.
+- Added trusted signed-in Hermes Cloud agent-tab attachment through a one-use ticket transport with Chat-only browser context.
+- Added nine Light/Dark themes across the side panel and Hermes Web: Nous, Midnight, Ember, Mono, Cyberpunk, Slate, Senter Space, Aphrodite, and Solstice.
+- Added generated-image diffusion reveal plus a lightbox with zoom, reset, open, and explicit download controls.
+- Added accurate context-window and compaction telemetry, compact context chips, payload breakdowns, capability fallbacks, and session-gated runtime accounting.
+- Added Firefox preview packaging through `npm run build:firefox` and Opera sidebar support.
+- Added a scoped element picker for explicit page-element context.
+- Added refreshed README visual-tour assets for the current side panel, all nine themes, and three Hermes Web states.
+
+### Changed
+
+- Bound model, provider, reasoning effort, skills, and other runtime options to the active browser session rather than mutating Hermes global defaults.
+- Preserved the canonical model catalog across partial gateway updates and hardened backend-acknowledged model locking.
+- Improved canonical session continuity, source metadata, context persistence, and duplicate-turn retry prevention across side-panel and Hermes Web surfaces.
+- Refined the side-panel header, logo, icon placement, composer controls, connection diagnostics, and runtime/context footer.
+- Expanded generated-media rendering, artifact discovery, voice-dictation fallback behavior, and final-image completion handling.
+- Updated Local, Cloud Preview, Remote, privacy, permission, security, data-flow, compatibility, and troubleshooting documentation.
+
+### Security
+
+- Added one shared decoded credential-URL policy for active, selected, open-tab, pinned-scope, prompt, receipt, and payload-hash surfaces.
+- Omitted common API keys, tokens, client secrets, private keys, credentials, signatures, and signed-URL fields even when parameter names are nested or encoded.
+- Hardened trusted Cloud dashboard attachment, remote session authentication diagnostics, secret redaction, sealed-token URL handling, and restricted browser-context summaries.
+- Kept browser interaction read-only: no click, type, form-submit, checkout, debugger, native-messaging, cookie, history, bookmark, or browser-control permissions.
+
+### Fixed
+
+- Fixed companion-plugin browser-context detection when Hermes user-message content is represented as OpenAI-style content arrays.
+- Fixed generated-image completion, session model/context alignment, runtime-option persistence, and duplicate browser-turn retries.
+- Fixed element-picker icon consistency and star-history chart URLs with encoded repository paths and sealed tokens.
+
+## [0.1.10] - 2026-07-07
 
 ### Release theme
 - Supportability and integration bridge release: read-only foundation, Browser Context Protocol receipts, sanitized context cache, session control, and Browser-scoped model selection.

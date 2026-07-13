@@ -27,6 +27,14 @@ test('image helpers extract standalone MEDIA tags and remove only image echoes',
   assert.equal(stripGeneratedImageEchoes(`![Image](${source})\nMEDIA:${source}\nCaption`, [source]), 'Caption');
 });
 
+test('image echo stripping handles persisted multi-megabyte data URLs without constructing an oversized regular expression', () => {
+  const source = `data:image/png;base64,${'A'.repeat(3_200_000)}`;
+  const message = `Generated successfully.\n\n![image](${source})`;
+
+  assert.doesNotThrow(() => stripGeneratedImageEchoes(message, [source]));
+  assert.equal(stripGeneratedImageEchoes(message, [source]), 'Generated successfully.');
+});
+
 test('renderMarkdown renders an API-delivered generated image data URL inline', () => {
   const html = renderMarkdown(`![Generated image](${TRANSPARENT_PNG_DATA_URL})`);
 

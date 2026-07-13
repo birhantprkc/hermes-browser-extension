@@ -17,6 +17,7 @@ import {
   composerKeyAction,
   connectionStateForGateway,
   contextAccountingSnapshot,
+  contextCompactionState,
   contextChipSummary,
   contextControlState,
   contextMeterDisplay,
@@ -78,6 +79,12 @@ import {
   updateBrowserModelScope,
   updateBrowserModelOptionScope,
 } from './lib/common.mjs';
+import {
+  APPEARANCE_THEMES,
+  normalizeAppearanceTheme,
+  normalizeColorMode,
+} from './lib/appearance-themes.mjs';
+import { createImageViewerState, imageViewerReducer } from './lib/image-viewer.mjs';
 import { extractYouTubeVideoId } from './lib/transcript.mjs';
 import { buildDashboardWsUrl, createGatewayClient, WS_EVENTS, WS_METHODS } from './lib/gateway-ws.mjs';
 import {
@@ -160,16 +167,29 @@ import {
 } from './lib/panel-residency.mjs';
 import {
   CONNECTION_TRANSPORTS,
+  apiCredentialSatisfied,
   connectionModePreviewUrl,
   legacyGatewayModeForConnection,
   migrateConnectionSettings,
   normalizeConnectionMode,
   resolvePhaseATransport,
+  sanitizeGatewayUrlForConnectionMode,
+  transportUsesDashboardTicket,
 } from './lib/connection-modes.mjs';
+import { CONNECTION_ACTIONS, connectionActionForSettings } from './lib/connection-dispatch.mjs';
+import { assertCloudAgentTabStillMatches, resolveActiveCloudAgentTab } from './lib/cloud-agent-tab.mjs';
 import {
   CONNECTION_STATES,
   createConnectionController,
 } from './lib/connection-controller.mjs';
+import { createHermesClient } from './lib/hermes-client.mjs';
+import { openHermesFullView } from './lib/fulltab-opener.mjs';
+import {
+  SURFACE_KINDS,
+  buildFullTabHandoffUrl,
+  createSurfaceId,
+  fullTabEntryPathForPage,
+} from './lib/surface-protocol.mjs';
 
 const $ = (selector) => document.querySelector(selector);
 const sidePanelParams = parseSidePanelParams(globalThis.location?.search || '');
@@ -217,6 +237,7 @@ const els = {
   voiceButton: $('#voiceButton'),
   refreshButton: $('#refreshButton'),
   settingsButton: $('#settingsButton'),
+  openFullViewButton: $('#openFullViewButton'),
   closeSettingsButton: $('#closeSettingsButton'),
   settingsDialog: $('#settingsDialog'),
   settingsForm: $('#settingsForm'),
@@ -252,6 +273,7 @@ const els = {
   contextUsageDetail: $('#contextUsageDetail'),
   contextMeterFill: $('#contextMeterFill'),
   contextPopover: $('#contextPopover'),
+  contextRuntimeBreakdown: $('#contextRuntimeBreakdown'),
   contextBreakdown: $('#contextBreakdown'),
   contextControlStatus: $('#contextControlStatus'),
   contextCompactButton: $('#contextCompactButton'),
@@ -259,6 +281,8 @@ const els = {
   gatewayModeInput: $('#gatewayModeInput'),
   remoteTransportRow: $('#remoteTransportRow'),
   gatewayUrlInput: $('#gatewayUrlInput'),
+  gatewayUrlField: $('#gatewayUrlField'),
+  cloudPreviewHelp: $('#cloudPreviewHelp'),
   gatewayHelp: $('#gatewayHelp'),
   apiKeyField: $('#apiKeyField'),
   apiKeyInput: $('#apiKeyInput'),
@@ -301,6 +325,9 @@ const els = {
 };
 
 let settings = { ...DEFAULT_SETTINGS };
+const hermesClient = createHermesClient({
+  getConnection: () => settings,
+});
 let startupReadiness = initialStartupReadiness(settings);
 let contextScope = normalizeContextScope(DEFAULT_CONTEXT_SCOPE);
 let previousConversationScope = normalizeContextScope(DEFAULT_CONTEXT_SCOPE);
@@ -393,6 +420,10 @@ function currentConnectionState() {
 
 function isConnected() {
   return currentConnectionState().connected;
+}
+
+function minimumConnectionReady() {
+  return isConnected() && apiCredentialSatisfied(settings);
 }
 
 function renderStartupReadiness() {
@@ -498,7 +529,8 @@ function openSettingsDialog() {
   els.settingsDialog.hidden = false;
   els.settingsDialog.setAttribute('aria-hidden', 'false');
   els.settingsDialog.scrollTo({ top: 0, left: 0, behavior: 'auto' });
-  els.apiKeyInput.focus({ preventScroll: true });
+  const mode = normalizeConnectionMode(settings.connectionMode);
+  (mode === 'cloud' ? els.connectButton : els.gatewayUrlInput)?.focus({ preventScroll: true });
 }
 
 function closeSettingsDialog() {
@@ -690,6 +722,31 @@ function ensureSidepanelInstanceId() {
   } catch {
     return 'default';
   }
+}
+
+function fullViewHandoffUrl() {
+  const sourceSurfaceId = createSurfaceId({
+    kind: SURFACE_KINDS.SIDE_PANEL,
+    instanceId: ensureSidepanelInstanceId(),
+  });
+  const url = buildFullTabHandoffUrl({
+    runtimeUrl: (path) => chrome.runtime.getURL(path),
+    entryPath: fullTabEntryPathForPage(globalThis.location?.href || ''),
+    newChat: true,
+    sourceTabId: sidePanelParams.tabId,
+    sourceSurfaceId,
+  });
+  return url;
+}
+
+async function openFullView() {
+  const url = fullViewHandoffUrl();
+  return openHermesFullView({
+    url,
+    tabsApi: chrome.tabs,
+    runtimeApi: chrome.runtime,
+    windowOpen: globalThis.open?.bind(globalThis),
+  });
 }
 
 function contextScopeSessionKey() {
@@ -1095,7 +1152,7 @@ async function ensureSessionForActiveScope({ focus = false } = {}) {
     await ensureDefaultBrowserSession({ focus });
     return;
   }
-  if (!settings.apiKey || !isConnected()) return;
+  if (!minimumConnectionReady()) return;
   const binding = await loadSessionBindingForActiveScope();
   if (binding?.sessionId) {
     const session = availableSessions.find((item) => item.id === binding.sessionId) || {
@@ -1106,14 +1163,14 @@ async function ensureSessionForActiveScope({ focus = false } = {}) {
     await openHermesSession(session);
     return;
   }
-  await createHermesBrowserSession({ title: makePinnedTabSessionTitle(currentContext.activeTab || previousConversationScope), focus });
+  await beginHermesBrowserDraft({ title: makePinnedTabSessionTitle(currentContext.activeTab || previousConversationScope), focus });
 }
 
 async function initializeSessionForPanelOpen({ focus = false } = {}) {
-  if (!settings.apiKey || !isConnected()) return;
+  if (!minimumConnectionReady()) return;
   if (shouldCreateFreshSessionOnOpen(settings)) {
-    await createHermesBrowserSession({ title: makeBrowserSessionTitle(), focus });
-    setStatus('ok', 'New Hermes Browser Extension session', settings.sessionId);
+    await beginHermesBrowserDraft({ title: makeBrowserSessionTitle(), focus });
+    setStatus('ok', 'New Hermes Browser Extension draft', 'Saved when you send the first message.');
     return;
   }
   await ensureSessionForActiveScope({ focus });
@@ -1225,6 +1282,8 @@ function renderConnectionModeCards() {
 function renderConnectionModePanel() {
   const mode = normalizeConnectionMode(els.connectionModeInput?.value || settings.connectionMode);
   if (els.apiKeyField) els.apiKeyField.hidden = mode === 'cloud';
+  if (els.gatewayUrlField) els.gatewayUrlField.hidden = mode === 'cloud';
+  if (els.cloudPreviewHelp) els.cloudPreviewHelp.hidden = mode !== 'cloud';
   renderGatewayHelp();
 }
 
@@ -2118,59 +2177,10 @@ const REPO_URL = 'https://github.com/abundantbeing/hermes-browser-extension';
 const runtimeManifest = globalThis.chrome?.runtime?.getManifest?.() || {};
 const CURRENT_EXTENSION_VERSION = normalizeExtensionVersion(runtimeManifest, els.versionLabel?.textContent);
 
-const COLOR_MODES = new Set(['light', 'dark', 'system']);
-const APPEARANCE_THEMES = Object.freeze([
-  {
-    value: 'nous',
-    name: 'Nous',
-    description: 'Ink blue with soft-white Desktop accents',
-    preview: { bg: '#0505e8', panel: '#0505e8', text: '#f8faff', muted: '#dbe6ff', accent: '#f8faff' },
-  },
-  {
-    value: 'midnight',
-    name: 'Midnight',
-    description: 'Deep blue-violet with cool accents',
-    preview: { bg: '#07061a', panel: '#0d0b25', text: '#d9d2ff', muted: '#8e88bd', accent: '#1d1850' },
-  },
-  {
-    value: 'ember',
-    name: 'Ember',
-    description: 'Warm crimson and bronze forge',
-    preview: { bg: '#1a0600', panel: '#250800', text: '#ffd0a4', muted: '#c98f65', accent: '#4b1603' },
-  },
-  {
-    value: 'mono',
-    name: 'Mono',
-    description: 'Clean grayscale minimal focus',
-    preview: { bg: '#0d0d0d', panel: '#111111', text: '#eeeeee', muted: '#9b9b9b', accent: '#1f1f1f' },
-  },
-  {
-    value: 'cyberpunk',
-    name: 'Cyberpunk',
-    description: 'Neon green terminal',
-    preview: { bg: '#001004', panel: '#001b08', text: '#12ff68', muted: '#00a947', accent: '#002d10' },
-  },
-  {
-    value: 'slate',
-    name: 'Slate',
-    description: 'Cool slate blue developer focus',
-    preview: { bg: '#081015', panel: '#0e171e', text: '#d0dbe2', muted: '#94a3ad', accent: '#172c3d' },
-  },
-]);
-const DEFAULT_APPEARANCE_THEME = APPEARANCE_THEMES[0].value;
 const systemColorQuery = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
   ? window.matchMedia('(prefers-color-scheme: dark)')
   : null;
 
-function normalizeColorMode(value = DEFAULT_SETTINGS.colorMode) {
-  const raw = String(value || DEFAULT_SETTINGS.colorMode || 'dark').trim().toLowerCase();
-  return COLOR_MODES.has(raw) ? raw : (DEFAULT_SETTINGS.colorMode || 'dark');
-}
-
-function normalizeAppearanceTheme(value = DEFAULT_SETTINGS.appearanceTheme) {
-  const raw = String(value || DEFAULT_SETTINGS.appearanceTheme || DEFAULT_APPEARANCE_THEME).trim().toLowerCase();
-  return APPEARANCE_THEMES.some((theme) => theme.value === raw) ? raw : DEFAULT_APPEARANCE_THEME;
-}
 
 function resolvedColorMode(value = settings.colorMode) {
   const mode = normalizeColorMode(value);
@@ -2977,28 +2987,59 @@ function renderContextWindow(userText = els.input?.value || '') {
     settings,
   });
   const attachmentTokens = estimateAttachmentTokens();
+  const session = availableSessions.find((item) => item.id === settings.sessionId) || {};
+  const runtime = activeSessionRuntime.sessionId === settings.sessionId ? activeSessionRuntime : {};
   const accounting = contextAccountingSnapshot({
     localPromptTokens: stats.estimatedTokens,
     draftTokens: attachmentTokens,
-    runtime: activeSessionRuntime.sessionId === settings.sessionId ? activeSessionRuntime : {},
+    runtime,
+    session,
     modelContextTokens: stats.modelContextTokens,
   });
   const contextLimit = accounting.contextLimitTokens || stats.modelContextTokens;
-  const runtimeLabel = [activeSessionRuntime.provider, activeSessionRuntime.model].filter(Boolean).join(' · ');
+  const runtimeLabel = [runtime.provider, runtime.model].filter(Boolean).join(' · ');
   const meter = contextMeterDisplay({ accounting, runtimeLabel, modelContextTokens: contextLimit });
+  const compaction = contextCompactionState({ accounting, runtime, session });
 
   els.contextCompactLabel.textContent = meter.compactLabel;
   els.contextPercentLabel.textContent = meter.percentLabel;
   els.contextBarButton.title = meter.title;
-  els.contextUsageDetail.textContent = meter.detail;
+  els.contextUsageDetail.textContent = compaction.detail;
   els.contextMeterFill.style.width = contextLimit ? `${Math.min(100, Math.max(0, meter.percent))}%` : '0%';
+
+  const compactionStateLabels = {
+    healthy: 'Healthy',
+    due: 'Due next Hermes turn',
+    'over-limit': 'Over limit · recovery pending',
+    unknown: 'Telemetry unavailable',
+  };
+  const telemetrySourceLabels = {
+    runtime: 'Live runtime',
+    session: 'Persisted session',
+    'local-estimate': 'Local next-request estimate',
+    unknown: 'Unavailable',
+  };
+  const runtimeRows = [
+    [accounting.source === 'local-estimate' ? 'Next request estimate' : 'Session context', `${formatNumber(compaction.usedTokens)} tokens`],
+    ['Context limit', compaction.contextLimitTokens ? `${formatNumber(compaction.contextLimitTokens)} tokens` : 'Not reported by Hermes'],
+    ['Auto-compact trigger', compaction.thresholdTokens ? `${formatNumber(compaction.thresholdTokens)} tokens · ${compaction.thresholdPercent}%` : 'Not reported by Hermes'],
+    ['Compactions', compaction.compressionCountKnown ? formatNumber(compaction.compressionCount) : 'Not reported by Hermes'],
+    ['Compaction state', compactionStateLabels[compaction.state] || compactionStateLabels.unknown],
+    ['Telemetry source', telemetrySourceLabels[compaction.source] || telemetrySourceLabels.unknown],
+  ];
+  els.contextRuntimeBreakdown.innerHTML = runtimeRows.map(([label, value]) => `
+    <dt>${escapeHtml(label)}</dt>
+    <dd>${escapeHtml(value)}</dd>
+  `).join('');
+
   const controls = contextControlState({ capabilities: gatewayCapabilities, percentUsed: meter.percent, contextSource: accounting.source });
   if (els.contextControlStatus) {
-    els.contextControlStatus.textContent = controls.compactRecommended
-      ? 'Context is getting full — compact when the runtime supports it.'
-      : controls.label;
+    els.contextControlStatus.textContent = controls.canCompact
+      ? controls.label
+      : 'Hermes owns automatic compaction for this connection.';
   }
   if (els.contextCompactButton) {
+    els.contextCompactButton.hidden = !controls.canCompact;
     els.contextCompactButton.disabled = !controls.canCompact || !settings.sessionId;
     els.contextCompactButton.textContent = controls.compactRecommended ? 'Compact recommended' : 'Compact context';
     els.contextCompactButton.title = controls.canCompact
@@ -3997,7 +4038,7 @@ async function loadSessions({ quiet = false } = {}) {
     }
     try {
       const result = await remoteWsConnection.client.request(WS_METHODS.sessionList, { limit: 200 });
-      availableSessions = normalizeHermesSessions(result);
+      availableSessions = normalizeHermesSessions(result).filter((session) => Number(session.messageCount || 0) > 0);
       syncActiveSessionRuntimeFromList();
       updateSessionLabel();
       renderSessionMenu();
@@ -4017,7 +4058,7 @@ async function loadSessions({ quiet = false } = {}) {
   }
   try {
     const payload = await loadAllHermesSessions();
-    availableSessions = normalizeHermesSessions(payload);
+    availableSessions = normalizeHermesSessions(payload).filter((session) => Number(session.messageCount || 0) > 0);
     syncActiveSessionRuntimeFromList();
     updateSessionLabel();
     renderSessionMenu();
@@ -4107,6 +4148,37 @@ function makeBrowserSessionTitle(date = new Date()) {
     second: '2-digit',
   });
   return `Hermes Browser Extension · ${stamp}`;
+}
+
+async function beginHermesBrowserDraft({ title = makeBrowserSessionTitle(), focus = true } = {}) {
+  // Dashboard WebSocket sessions require a server-issued id; local API sessions
+  // can remain drafts until the first turn reaches ensureHermesSession().
+  if (isRemoteWsMode()) return createHermesBrowserSession({ title, focus });
+  const sessionId = makeBrowserSessionId();
+  const preferredBinding = preferredModelBindingForNewSession();
+  const preferredOptions = preferredModelOptionsForNewSession();
+  const preferredModel = modelForBinding(preferredBinding);
+  settings = {
+    ...settings,
+    sessionId,
+    sessionTitle: title,
+    model: preferredModel?.id || preferredBinding?.modelId || settings.model,
+    modelContextTokens: preferredModel?.contextTokens || preferredBinding?.contextTokens || settings.modelContextTokens || 0,
+    extensionPreferredModel: preferredBinding,
+    sessionModelBindings: { ...(settings.sessionModelBindings || {}), [sessionId]: preferredBinding },
+    sessionModelOptionBindings: { ...(settings.sessionModelOptionBindings || {}), [sessionId]: preferredOptions },
+    modelScopeVersion: DEFAULT_SETTINGS.modelScopeVersion,
+  };
+  activeSessionRuntime = { ...activeSessionRuntime, sessionId, usedTokens: 0, inputTokens: 0, outputTokens: 0, model: '', provider: '', source: '' };
+  sessionRoutesAvailable = true;
+  messages = [];
+  await chrome.storage.local.set({ hermesBrowserSettings: settings, [activeMessagesStorageKey(previousConversationScope)]: [] });
+  await saveSessionBindingForActiveScope({ id: sessionId, title, source: DEFAULT_SETTINGS.sessionSource });
+  renderMessagesFromStorage();
+  updateSessionLabel();
+  renderSessionMenu();
+  if (focus) els.input.focus();
+  return { id: sessionId, title, source: DEFAULT_SETTINGS.sessionSource, draft: true };
 }
 
 function preferredModelOptionsForNewSession() {
@@ -4306,7 +4378,7 @@ async function ensureDefaultBrowserSession({ focus = false } = {}) {
     await openHermesSession(existingBrowserSession);
     return;
   }
-  await createHermesBrowserSession({ title: makeBrowserSessionTitle(), focus });
+  await beginHermesBrowserDraft({ title: makeBrowserSessionTitle(), focus });
 }
 
 const THINKING_PLACEHOLDER = 'Hermes is thinking...';
@@ -4335,6 +4407,24 @@ function renderMessageContentElement(element, content = '') {
     return;
   }
   element.innerHTML = renderMarkdown(content || '');
+  for (const image of element.querySelectorAll('img[data-slot="aui_generated-image"]')) {
+    const wrapper = document.createElement('span');
+    wrapper.className = 'generated-image-inspectable';
+    wrapper.tabIndex = 0;
+    wrapper.setAttribute('role', 'button');
+    wrapper.setAttribute('aria-label', 'Open generated image for closer inspection');
+    const inspect = document.createElement('span');
+    inspect.className = 'generated-image-inspect';
+    inspect.setAttribute('aria-hidden', 'true');
+    inspect.textContent = '⌕';
+    image.replaceWith(wrapper);
+    wrapper.append(image, inspect);
+    wrapper.addEventListener('keydown', (event) => {
+      if (!['Enter', ' '].includes(event.key)) return;
+      event.preventDefault();
+      openGeneratedImageLightbox(image);
+    });
+  }
 }
 
 function closeGeneratedImageLightbox() {
@@ -4351,6 +4441,8 @@ function openGeneratedImageLightbox(image) {
   const source = String(image?.currentSrc || image?.src || '').trim();
   if (!source) return;
   closeGeneratedImageLightbox();
+  let viewerState = createImageViewerState();
+  let panGesture = null;
 
   const dialog = document.createElement('div');
   dialog.className = 'generated-image-lightbox';
@@ -4360,12 +4452,28 @@ function openGeneratedImageLightbox(image) {
 
   const frame = document.createElement('div');
   frame.className = 'generated-image-lightbox-frame';
+  const stage = document.createElement('div');
+  stage.className = 'generated-image-lightbox-stage';
   const preview = document.createElement('img');
   preview.src = source;
   preview.alt = image.alt || 'Generated image';
+  preview.draggable = false;
+  stage.append(preview);
 
   const actions = document.createElement('div');
   actions.className = 'generated-image-lightbox-actions';
+  const zoomOut = document.createElement('button');
+  zoomOut.type = 'button';
+  zoomOut.textContent = '−';
+  zoomOut.setAttribute('aria-label', 'Zoom out');
+  const zoomLabel = document.createElement('button');
+  zoomLabel.type = 'button';
+  zoomLabel.textContent = '100%';
+  zoomLabel.setAttribute('aria-label', 'Reset zoom');
+  const zoomIn = document.createElement('button');
+  zoomIn.type = 'button';
+  zoomIn.textContent = '+';
+  zoomIn.setAttribute('aria-label', 'Zoom in');
   const download = document.createElement('a');
   download.className = 'generated-image-lightbox-download';
   download.href = source;
@@ -4378,13 +4486,48 @@ function openGeneratedImageLightbox(image) {
   close.className = 'generated-image-lightbox-close';
   close.textContent = 'Close';
   close.addEventListener('click', closeGeneratedImageLightbox);
-  actions.append(download, close);
-  frame.append(preview, actions);
+  const renderViewer = () => {
+    preview.style.transform = `translate3d(${viewerState.x}px, ${viewerState.y}px, 0) scale(${viewerState.scale})`;
+    zoomLabel.textContent = `${Math.round(viewerState.scale * 100)}%`;
+    zoomOut.disabled = viewerState.scale <= 1;
+    zoomLabel.disabled = viewerState.scale <= 1 && viewerState.x === 0 && viewerState.y === 0;
+    stage.toggleAttribute('data-zoomed', viewerState.scale > 1);
+  };
+  const updateViewer = (action) => {
+    viewerState = imageViewerReducer(viewerState, action);
+    renderViewer();
+  };
+  zoomOut.addEventListener('click', () => updateViewer({ type: 'zoom-out' }));
+  zoomLabel.addEventListener('click', () => updateViewer({ type: 'reset' }));
+  zoomIn.addEventListener('click', () => updateViewer({ type: 'zoom-in' }));
+  stage.addEventListener('wheel', (event) => {
+    event.preventDefault();
+    updateViewer({ type: event.deltaY < 0 ? 'zoom-in' : 'zoom-out' });
+  }, { passive: false });
+  stage.addEventListener('pointerdown', (event) => {
+    if (viewerState.scale <= 1) return;
+    panGesture = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, x: viewerState.x, y: viewerState.y };
+    stage.setPointerCapture?.(event.pointerId);
+    stage.toggleAttribute('data-dragging', true);
+  });
+  stage.addEventListener('pointermove', (event) => {
+    if (!panGesture || panGesture.pointerId !== event.pointerId) return;
+    updateViewer({ type: 'pan', x: panGesture.x + event.clientX - panGesture.startX, y: panGesture.y + event.clientY - panGesture.startY });
+  });
+  const endPan = () => {
+    panGesture = null;
+    stage.removeAttribute('data-dragging');
+  };
+  stage.addEventListener('pointerup', endPan);
+  stage.addEventListener('pointercancel', endPan);
+  actions.append(zoomOut, zoomLabel, zoomIn, download, close);
+  frame.append(stage, actions);
   dialog.append(frame);
   dialog.addEventListener('click', (event) => {
     if (event.target === dialog) closeGeneratedImageLightbox();
   });
   document.body.append(dialog);
+  renderViewer();
   close.focus();
 }
 
@@ -4843,9 +4986,15 @@ async function saveSettingsFromForm() {
   const gatewayMode = legacyGatewayModeForConnection({ connectionMode, connectionTransport });
   const remote = connectionMode !== 'local';
   const rawGatewayUrl = els.gatewayUrlInput.value.trim();
-  // In remote mode, don't coerce an empty field to the loopback default — that
-  // would persist a misleading remote+localhost config. Leave it empty.
-  const gatewayUrl = rawGatewayUrl ? normalizeGatewayUrl(rawGatewayUrl) : (remote ? '' : normalizeGatewayUrl(''));
+  const gatewayUrl = connectionMode === 'cloud'
+    ? sanitizeGatewayUrlForConnectionMode({
+        connectionMode,
+        gatewayUrl: rawGatewayUrl,
+        localDefaultUrl: DEFAULT_SETTINGS.gatewayUrl,
+      })
+    : rawGatewayUrl
+      ? normalizeGatewayUrl(rawGatewayUrl)
+      : (remote ? '' : normalizeGatewayUrl(''));
   settings = {
     ...settings,
     connectionMode: normalizeConnectionMode(connectionMode),
@@ -4855,8 +5004,8 @@ async function saveSettingsFromForm() {
     trustedDashboardOrigin: isTrustedDashboardOrigin(gatewayUrl, settings.trustedDashboardOrigin)
       ? settings.trustedDashboardOrigin
       : '',
-    apiKey,
-    tokenSource,
+    apiKey: connectionMode === 'cloud' ? '' : apiKey,
+    tokenSource: connectionMode === 'cloud' ? '' : tokenSource,
     model: settings.model || DEFAULT_SETTINGS.model,
     modelContextTokens: selected?.contextTokens || settings.modelContextTokens || 0,
     sessionId: els.sessionIdInput.value.trim() || DEFAULT_SETTINGS.sessionId,
@@ -5376,23 +5525,8 @@ async function refreshContextWithSpin() {
   }
 }
 
-function authHeaders({ json = false } = {}) {
-  const headers = json ? { 'Content-Type': 'application/json' } : {};
-  if (settings.apiKey) headers.Authorization = `Bearer ${settings.apiKey}`;
-  if (settings.activeProfile) headers['X-Hermes-Profile'] = settings.activeProfile;
-  return headers;
-}
-
 async function apiFetch(path, options = {}) {
-  const base = normalizeGatewayUrl(settings.gatewayUrl);
-  const hasBody = typeof options.body !== 'undefined';
-  return fetch(`${base}${path}`, {
-    ...options,
-    headers: {
-      ...authHeaders({ json: hasBody }),
-      ...(options.headers || {}),
-    },
-  });
+  return hermesClient.fetch(path, options);
 }
 
 async function compactCurrentSessionContext() {
@@ -5786,7 +5920,6 @@ async function ensureRemoteWsClient() {
   }
   remoteWsConnection = null;
 
-  console.info('[Hermes] remote: minting ws-ticket via dashboard tab for', baseUrl);
   const ticket = await mintWsTicket({
     tabsApi: chrome.tabs,
     scriptingApi: chrome.scripting,
@@ -5794,16 +5927,11 @@ async function ensureRemoteWsClient() {
     tabId: trustedDashboardTabId,
   });
   if (!ticket.ok) {
-    console.warn('[Hermes] remote: ws-ticket mint failed:', ticket.reason, ticket);
     const error = new Error(ticketFailureHelp(ticket.reason, ticket.origin));
     error.ticketReason = ticket.reason;
     throw error;
   }
   const wsUrl = buildDashboardWsUrl(baseUrl, ticket.ticket);
-  console.info(
-    `[Hermes] remote: ticket ok (ttl=${ticket.ttlSeconds}s, ${String(ticket.ticket || '').length} chars); connecting`,
-    wsUrl.replace(/ticket=[^&]+/, `ticket=<${String(ticket.ticket || '').length} chars>`),
-  );
   const client = createGatewayClient();
   try {
     await client.connect(wsUrl);
@@ -6071,7 +6199,93 @@ async function pollPairing(pairingId, { attempts = 90, delay = 1500 } = {}) {
   throw new Error('Timed out waiting for Hermes Desktop approval.');
 }
 
+async function connectTicketTransport({ cloud = false } = {}) {
+  const mode = cloud ? 'cloud' : 'remote';
+  const transport = cloud ? CONNECTION_TRANSPORTS.CLOUD_TICKET_WS : CONNECTION_TRANSPORTS.REMOTE_DASHBOARD;
+  const generation = connectionController.begin({ mode, transport });
+  els.connectButton.disabled = true;
+  els.connectButton.textContent = cloud ? 'Connecting Cloud…' : 'Attaching dashboard…';
+  markConnectionProbe('connecting', cloud ? 'Finding active Hermes Cloud agent tab.' : settings.gatewayUrl);
+  try {
+    if (cloud) {
+      const selected = await resolveActiveCloudAgentTab({ tabsApi: chrome.tabs });
+      if (!connectionController.isCurrent(generation)) return;
+      const approved = globalThis.confirm?.(dashboardTrustPrompt(selected.origin)) === true;
+      if (!approved) throw new Error('Hermes Cloud connection was cancelled before ticket minting.');
+      await assertCloudAgentTabStillMatches({ tabsApi: chrome.tabs, tabId: selected.tabId, expectedOrigin: selected.origin });
+      if (!connectionController.isCurrent(generation)) return;
+      trustedDashboardTabId = selected.tabId;
+      settings = {
+        ...migrateConnectionSettings(settings),
+        connectionMode: 'cloud',
+        connectionTransport: CONNECTION_TRANSPORTS.CLOUD_TICKET_WS,
+        gatewayMode: 'remote-dashboard',
+        gatewayUrl: selected.origin,
+        trustedDashboardOrigin: selected.origin,
+        apiKey: '',
+        tokenSource: '',
+      };
+    } else {
+      const origin = await requestDashboardOriginTrust(settings.gatewayUrl);
+      if (!connectionController.isCurrent(generation)) return;
+      settings = {
+        ...migrateConnectionSettings(settings),
+        connectionMode: 'remote',
+        connectionTransport: CONNECTION_TRANSPORTS.REMOTE_DASHBOARD,
+        gatewayMode: 'remote-dashboard',
+        gatewayUrl: origin,
+      };
+    }
+
+    await chrome.storage.local.set({ hermesBrowserSettings: settings });
+    syncSettingsForm();
+    const connection = await ensureRemoteWsClient();
+    if (!connectionController.isCurrent(generation)) return;
+    let modelNote = '';
+    try {
+      const models = await connection.client.request(WS_METHODS.modelOptions);
+      await loadModels({ quiet: true, payload: models });
+      modelNote = availableModels.length ? ` · ${availableModels.length} models` : '';
+    } catch {
+      // Older gateways may not expose model.options; the socket remains usable.
+    }
+    await loadSessions({ quiet: true }).catch(() => {});
+    await initializeSessionForPanelOpen({ focus: false }).catch(() => {});
+    if (!connectionController.transition(generation, CONNECTION_STATES.READY, { gateway: 'dashboard-ws' })) return;
+    const target = normalizeGatewayUrl(settings.gatewayUrl);
+    markGatewayReachable(`${target}${modelNote}`);
+    setStatus('ok', cloud ? 'Hermes Cloud Preview connected' : 'Remote Hermes dashboard connected', `${target}${modelNote}`);
+    els.connectStatus.textContent = cloud
+      ? `Connected to the active signed-in Hermes Cloud agent (${target}).`
+      : `Connected to ${target}.`;
+    updateConnectionPrompt();
+  } catch (error) {
+    const diagnostic = classifyGatewayError(error);
+    if (connectionController.transition(generation, CONNECTION_STATES.ERROR, { errorKind: diagnostic.kind })) {
+      markGatewayUnreachable(error);
+      els.connectStatus.textContent = error?.message || String(error);
+      setStatus('error', cloud ? 'Hermes Cloud Preview failed' : 'Dashboard Attach failed', error?.message || String(error));
+    }
+  } finally {
+    if (connectionController.isCurrent(generation)) {
+      els.connectButton.disabled = false;
+      els.connectButton.textContent = 'Connect to Hermes';
+    }
+  }
+}
+
 async function connectToHermes() {
+  settings = migrateConnectionSettings(settings);
+  const action = connectionActionForSettings(settings);
+  if (action === CONNECTION_ACTIONS.CLOUD_ACTIVE_TAB_ATTACH) return connectTicketTransport({ cloud: true });
+  if (action === CONNECTION_ACTIONS.REMOTE_DASHBOARD_ATTACH) return connectTicketTransport({ cloud: false });
+  return connectApiWithPairing();
+}
+
+async function connectApiWithPairing() {
+  if (transportUsesDashboardTicket(settings.connectionTransport)) {
+    throw new Error('Ticket-based Hermes connections must use Dashboard Attach.');
+  }
   settings.gatewayUrl = normalizeGatewayUrl(settings.gatewayUrl || els.gatewayUrlInput.value || DEFAULT_SETTINGS.gatewayUrl);
   settings.gatewayMode = normalizeGatewayMode(settings.gatewayMode || els.gatewayModeInput?.value || DEFAULT_SETTINGS.gatewayMode);
   const generation = connectionController.begin({
@@ -6208,6 +6422,16 @@ async function askHermes(userText, turnAttachments = [...attachments]) {
 
   const autoTitle = autoTitleForCurrentTurn(userText);
   sending = true;
+    if (!isRemoteWsMode()) {
+      try {
+        await ensureHermesSession();
+      } catch (error) {
+        sending = false;
+        updateComposerBusyState();
+        setStatus('error', 'Could not start Hermes session', error?.message || String(error));
+        return false;
+      }
+    }
     const selectedModel = currentSelectedModel();
     if (selectedModel && !isModelRuntimeSelectable(selectedModel)) {
       setStatus('warn', 'Sending observed model request', `${modelDisplayName(selectedModel)} was discovered from session history. The extension will request it, but the connected Hermes gateway may use its configured model if it does not support per-request overrides.`);
@@ -6387,6 +6611,12 @@ function flashTestConnectionResult(ok) {
 
 async function testConnection() {
   await saveSettingsFromForm();
+  const action = connectionActionForSettings(settings);
+  if (action === CONNECTION_ACTIONS.CLOUD_ACTIVE_TAB_ATTACH) {
+    await connectTicketTransport({ cloud: true });
+    flashTestConnectionResult(isConnected());
+    return;
+  }
   const generation = connectionController.begin({
     mode: normalizeConnectionMode(settings.connectionMode),
     transport: settings.connectionTransport,
@@ -6571,6 +6801,9 @@ function bindEvents() {
   portalDockFloatingPanels();
   observeDockFloatingAnchor();
   els.settingsButton.addEventListener('click', openSettingsDialog);
+  els.openFullViewButton?.addEventListener('click', () => {
+    openFullView().catch((error) => setStatus('warn', 'Could not open full view', error?.message || String(error)));
+  });
   els.manualSettingsButton.addEventListener('click', openSettingsDialog);
   [els.modelMenu, els.sessionMenu, els.contextPopover, els.attachMenu, els.skillMenu].filter(Boolean).forEach((panel) => {
     panel.addEventListener('click', (event) => event.stopPropagation());
@@ -6596,16 +6829,16 @@ function bindEvents() {
       return;
     }
     try {
-      await createHermesBrowserSession();
+      await beginHermesBrowserDraft();
       await loadSessions({ quiet: true });
-      setStatus('ok', 'New Hermes Browser Extension session', settings.sessionId);
+      setStatus('ok', 'New Hermes Browser Extension draft', 'Saved when you send the first message.');
     } catch (error) {
       setStatus('error', 'Could not create session', error?.message || String(error));
     }
   });
   els.createSessionButton.addEventListener('click', async () => {
     try {
-      await createHermesBrowserSession();
+      await beginHermesBrowserDraft();
       els.sessionMenu.hidden = true;
       els.sessionMenuButton.setAttribute('aria-expanded', 'false');
       await loadSessions({ quiet: true });
@@ -6617,7 +6850,8 @@ function bindEvents() {
   els.sessionSearchInput.addEventListener('input', () => renderSessionMenu(els.sessionSearchInput.value));
   els.closeSettingsButton.addEventListener('click', closeSettingsDialog);
   els.messages.addEventListener('click', (event) => {
-    const image = event.target?.closest?.('img[data-slot="aui_generated-image"]');
+    const image = event.target?.closest?.('.generated-image-inspectable')?.querySelector?.('img[data-slot="aui_generated-image"]')
+      || event.target?.closest?.('img[data-slot="aui_generated-image"]');
     if (!image) return;
     openGeneratedImageLightbox(image);
   });
@@ -6875,7 +7109,7 @@ function bindEvents() {
     try {
       await saveSettingsFromForm();
       await probeGatewayLiveness({ quiet: false });
-      if (settings.apiKey && isConnected()) {
+      if (minimumConnectionReady()) {
         await loadGatewayCapabilities({ quiet: true, healthOk: true });
         await loadModels({ quiet: true });
         await loadSkills({ quiet: true });
@@ -7091,10 +7325,24 @@ async function runStartupReadiness() {
     });
     renderStartupReadiness();
 
+    const startupSettings = migrateConnectionSettings(settings);
+    if (startupSettings.connectionMode === 'cloud' && remoteWsConnection?.client?.readyState !== 1) {
+      setStartupReadiness({
+        step: 'gateway',
+        status: 'unconfigured',
+        detail: 'Open the signed-in Hermes Cloud agent in the active tab, then choose Connect to Hermes.',
+      });
+      renderModelOptions();
+      renderSessionMenu();
+      renderProfiles();
+      renderSkillSuggestions();
+      updateSessionLabel();
+      return;
+    }
     setStartupReadiness({ phase: 'gateway-probe', step: 'gateway', status: 'active', detail: `Checking ${normalizeGatewayUrl(settings.gatewayUrl)}…` });
     const state = await probeGatewayLiveness({ quiet: true });
-    if (!settings.apiKey || !state.connected) {
-      const missingToken = !settings.apiKey;
+    if (!apiCredentialSatisfied(settings) || !state.connected) {
+      const missingToken = !apiCredentialSatisfied(settings);
       setStartupReadiness({
         step: 'gateway',
         status: missingToken ? 'unconfigured' : (state.state === 'unreachable' ? 'unreachable' : 'error'),

@@ -5,15 +5,21 @@ import {
   CONNECTION_MODES,
   CONNECTION_SCHEMA_VERSION,
   CONNECTION_TRANSPORTS,
+  apiCredentialSatisfied,
   connectionModePreviewUrl,
+  isLoopbackGatewayUrl,
   legacyGatewayModeForConnection,
   migrateConnectionSettings,
   normalizeConnectionMode,
   resolvePhaseATransport,
+  sanitizeGatewayUrlForConnectionMode,
+  transportRequiresApiKey,
+  transportUsesDashboardTicket,
 } from '../extension/lib/connection-modes.mjs';
 
 test('connection modes expose Desktop-aligned product choices', () => {
   assert.deepEqual(CONNECTION_MODES.map((mode) => mode.value), ['local', 'cloud', 'remote']);
+  assert.equal(CONNECTION_MODES.find((mode) => mode.value === 'cloud')?.label, 'Hermes Cloud Preview');
   assert.equal(normalizeConnectionMode('CLOUD'), 'cloud');
   assert.equal(normalizeConnectionMode('bogus'), 'local');
   const freshInstall = migrateConnectionSettings({});
@@ -124,4 +130,24 @@ test('migration preserves unrelated settings and repairs malformed connection va
   assert.equal(migrated.connectionTransport, 'local-api');
   assert.equal(migrated.gatewayUrl, input.gatewayUrl);
   assert.equal(migrated.selectedModel, input.selectedModel);
+});
+
+test('ticket transports are keyless while Local and Remote API require credentials', () => {
+  assert.equal(transportRequiresApiKey(CONNECTION_TRANSPORTS.LOCAL_API), true);
+  assert.equal(transportRequiresApiKey(CONNECTION_TRANSPORTS.REMOTE_API), true);
+  assert.equal(transportRequiresApiKey(CONNECTION_TRANSPORTS.CLOUD_TICKET_WS), false);
+  assert.equal(transportRequiresApiKey(CONNECTION_TRANSPORTS.REMOTE_DASHBOARD), false);
+  assert.equal(transportUsesDashboardTicket(CONNECTION_TRANSPORTS.CLOUD_TICKET_WS), true);
+  assert.equal(transportUsesDashboardTicket(CONNECTION_TRANSPORTS.REMOTE_DASHBOARD), true);
+  assert.equal(apiCredentialSatisfied({ connectionMode: 'cloud', apiKey: '' }), true);
+  assert.equal(apiCredentialSatisfied({ connectionMode: 'local', apiKey: '' }), false);
+});
+
+test('Cloud sanitization rejects loopback, insecure, and credential-bearing origins', () => {
+  assert.equal(isLoopbackGatewayUrl('http://127.0.0.1:8642'), true);
+  assert.equal(isLoopbackGatewayUrl('https://agent.example.test'), false);
+  assert.equal(sanitizeGatewayUrlForConnectionMode({ connectionMode: 'cloud', gatewayUrl: 'http://127.0.0.1:8642' }), '');
+  assert.equal(sanitizeGatewayUrlForConnectionMode({ connectionMode: 'cloud', gatewayUrl: 'http://agent.example.test' }), '');
+  assert.equal(sanitizeGatewayUrlForConnectionMode({ connectionMode: 'cloud', gatewayUrl: 'https://user@agent.example.test' }), '');
+  assert.equal(sanitizeGatewayUrlForConnectionMode({ connectionMode: 'cloud', gatewayUrl: 'https://agent.example.test/chat' }), 'https://agent.example.test');
 });

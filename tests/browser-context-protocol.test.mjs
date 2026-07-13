@@ -56,7 +56,9 @@ test('buildBrowserContextPayload normalizes browser context into a stable protoc
 
   assert.equal(payload.protocol, BROWSER_CONTEXT_PROTOCOL_ID);
   assert.equal(payload.contextScope.mode, 'pinned-tab');
-  assert.equal(payload.activeTab.title, '<img src=x onerror=alert(1)>');
+  assert.equal(payload.activeTab.title, '(restricted tab)');
+  assert.equal(payload.activeTab.url, '(omitted by privacy guard)');
+  assert.doesNotMatch(JSON.stringify(payload.activeTab), /browser-secret-value/);
   assert.equal(payload.tabs[1].title, '(restricted tab)');
   assert.equal(payload.tabs[1].url, '(omitted by privacy guard)');
   assert.match(payload.pageContext.selectedText, /\[REDACTED_SECRET\]/);
@@ -105,6 +107,40 @@ test('Browser Context Protocol restricts sensitive query and hash URL fragments'
   assert.equal(payload.tabs[3].title, '(restricted tab)');
   assert.equal(payload.tabs[4].title, 'Public Docs');
   assert.equal(payload.selectedTabs[0].url, '(omitted by privacy guard)');
+});
+
+test('Browser Context Protocol removes credential-bearing URLs from every prompt-facing surface', () => {
+  const secret = 'browser-secret-value';
+  const credentialUrl = `https://example.com/docs?client%5Fsecret=${secret}#token=${secret}`;
+  const context = {
+    activeTab: { id: 1, active: true, title: 'Credential callback', url: credentialUrl },
+    tabs: [{ id: 1, active: true, title: 'Credential callback', url: credentialUrl }],
+    selectedTabs: [{ id: 1, active: true, title: 'Credential callback', url: credentialUrl }],
+    contextScope: { mode: 'pinned-tab', pinnedTitle: 'Credential callback', pinnedUrl: credentialUrl },
+    pageContext: { selectedText: '', text: 'Safe public page text.', meta: {} },
+    settings: BASE_SETTINGS,
+  };
+
+  const payload = buildBrowserContextPayload(context);
+  const prompt = buildBrowserContextPrompt({ ...context, userText: 'Summarize this page.' });
+  const receipt = buildBrowserContextReceipt({ context, settings: BASE_SETTINGS });
+  const firstHash = browserContextPayloadHash(context);
+  const secondHash = browserContextPayloadHash({
+    ...context,
+    activeTab: { ...context.activeTab, url: credentialUrl.replaceAll(secret, 'different-secret') },
+    tabs: context.tabs.map((tab) => ({ ...tab, url: tab.url.replaceAll(secret, 'different-secret') })),
+    selectedTabs: context.selectedTabs.map((tab) => ({ ...tab, url: tab.url.replaceAll(secret, 'different-secret') })),
+    contextScope: { ...context.contextScope, pinnedUrl: context.contextScope.pinnedUrl.replaceAll(secret, 'different-secret') },
+  });
+
+  assert.equal(payload.activeTab.title, '(restricted tab)');
+  assert.equal(payload.activeTab.url, '(omitted by privacy guard)');
+  assert.equal(payload.tabs[0].url, '(omitted by privacy guard)');
+  assert.equal(payload.selectedTabs[0].url, '(omitted by privacy guard)');
+  assert.doesNotMatch(JSON.stringify(payload), new RegExp(secret));
+  assert.doesNotMatch(prompt, new RegExp(secret));
+  assert.doesNotMatch(JSON.stringify(receipt), new RegExp(secret));
+  assert.equal(firstHash, secondHash);
 });
 
 test('buildBrowserContextPrompt preserves existing untrusted-context prompt boundaries', () => {

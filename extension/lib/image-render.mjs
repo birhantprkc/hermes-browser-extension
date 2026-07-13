@@ -58,18 +58,69 @@ export function extractMediaTags(text = '') {
 }
 
 /**
+ * Resolve the first browser-safe generated image from an assistant response.
+ */
+export function firstResolvedImageSource(text = '') {
+  return resolvedGeneratedImageSources(text)[0] || '';
+}
+
+/**
+ * Resolve every browser-safe generated raster image in an assistant response.
+ * Hermes tool output can use either MEDIA tags or Markdown image syntax; keep
+ * both in source order and de-duplicate repeated delivery receipts.
+ */
+export function resolvedGeneratedImageSources(text = '') {
+  const raw = String(text || '');
+  const { media } = extractMediaTags(raw);
+  const candidates = media.map((item) => item.source);
+  const markdownImage = /^\s*!\[[^\]]*\]\((?:<)?([^>\s)]+)(?:>)?(?:\s+['"][^'"]*['"])?\)\s*$/gim;
+  let match;
+  while ((match = markdownImage.exec(raw)) !== null) candidates.push(match[1]);
+
+  const seen = new Set();
+  return candidates
+    .map((candidate) => resolveImageSource(candidate))
+    .filter((source) => {
+      if (!source || seen.has(source)) return false;
+      seen.add(source);
+      return true;
+    });
+}
+
+/**
  * Remove repeated generated-image references once an image is rendered separately.
+ *
+ * Never interpolate image sources into a RegExp: persisted data URLs can be
+ * several megabytes long and exceed the JavaScript engine's regex limit.
  */
 export function stripGeneratedImageEchoes(text = '', imageSources = []) {
-  let cleaned = String(text || '');
-  for (const rawSource of imageSources) {
-    const source = String(rawSource || '').trim();
-    if (!source) continue;
-    const escaped = source.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    cleaned = cleaned
-      .replace(new RegExp(`!\\[[^\\]]*\\]\\(${escaped}\\)`, 'gi'), '')
-      .replace(new RegExp(`^\\s*MEDIA:\\s*${escaped}\\s*$`, 'gim'), '')
-      .replace(new RegExp(`^\\s*${escaped}\\s*$`, 'gim'), '');
-  }
-  return cleaned.replace(/\n{3,}/g, '\n\n').trim();
+  const sources = new Set(
+    imageSources
+      .map((value) => String(value || '').trim())
+      .filter(Boolean),
+  );
+  if (!sources.size) return String(text || '').replace(/\n{3,}/g, '\n\n').trim();
+
+  const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+  const remaining = lines.filter((line) => {
+    const trimmed = stripWrappingQuotes(line);
+    if (sources.has(trimmed)) return false;
+
+    if (trimmed.slice(0, 6).toLowerCase() === 'media:') {
+      const mediaSource = stripWrappingQuotes(trimmed.slice(6));
+      if (sources.has(mediaSource)) return false;
+    }
+
+    if (trimmed.startsWith('![') && trimmed.endsWith(')')) {
+      const sourceStart = trimmed.indexOf('](');
+      if (sourceStart > 1) {
+        const markdownSource = trimmed.slice(sourceStart + 2, -1).trim();
+        if (sources.has(markdownSource)) return false;
+      }
+    }
+
+    return true;
+  });
+
+  return remaining.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }

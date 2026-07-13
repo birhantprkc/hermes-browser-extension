@@ -152,19 +152,19 @@ html[data-hermes-theme="nous"][data-hermes-mode="dark"] {
 }
 
 html[data-hermes-theme="nous"][data-hermes-mode="light"] {
-  --hermes-blue: #f4f7ff;
-  --hermes-blue-deep: #e3ebff;
+  --hermes-blue: #0505e8;
+  --hermes-blue-deep: #03038f;
   --hermes-paper: #ffffff;
-  --hermes-fg: #03038f;
+  --hermes-fg: #f8faff;
   --hermes-ink: #0505e8;
   --hermes-accent: #dbe6ff;
-  --hermes-bg-rgb: 244, 247, 255;
-  --hermes-panel-rgb: 255, 255, 255;
+  --hermes-bg-rgb: 5, 5, 232;
+  --hermes-panel-rgb: 5, 5, 232;
   --hermes-paper-rgb: 255, 255, 255;
-  --hermes-fg-rgb: 3, 3, 143;
+  --hermes-fg-rgb: 248, 250, 255;
   --hermes-ink-rgb: 5, 5, 232;
   --hermes-accent-rgb: 219, 230, 255;
-  --hermes-menu-bg: #f9fbff;
+  --hermes-menu-bg: #03038f;
 }
 
 html[data-hermes-theme="midnight"][data-hermes-mode="dark"] {
@@ -406,7 +406,7 @@ button { text-transform: uppercase; letter-spacing: 0.14em; }
   top: 0;
   z-index: 20;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto auto;
   align-items: center;
   gap: 6px;
   min-height: 42px;
@@ -422,14 +422,22 @@ button { text-transform: uppercase; letter-spacing: 0.14em; }
 .brand-mini {
   display: flex;
   align-items: center;
-  min-width: 44px;
-  max-width: 54px;
+  min-width: 52px;
+  max-width: 52px;
   font-family: var(--hermes-font-display);
   line-height: 0.82;
   letter-spacing: -0.04em;
   overflow: hidden;
 }
 .brand-mini strong { font-size: 14px; font-weight: 300; text-align: left; }
+.brand-mini-mark {
+  display: block;
+  width: 52px;
+  height: 25px;
+  background: var(--hermes-brand-mark, var(--hermes-fg));
+  -webkit-mask: url("assets/img/hermes-agent-logo.svg") center / contain no-repeat;
+  mask: url("assets/img/hermes-agent-logo.svg") center / contain no-repeat;
+}
 .topbar-status { min-width: 0; display: flex; align-items: center; justify-content: center; }
 .connection-pill {
   display: inline-flex;
@@ -607,6 +615,9 @@ button:hover { background: rgba(var(--hermes-ink-rgb),0.08); color: var(--hermes
 button:active { transform: translateY(1px); }
 button:disabled { cursor: wait; opacity: 0.55; transform: none; }
 .settings-button { min-width: 42px; min-height: 30px; padding: 7px 8px 5px; font-size: 10px; }
+.settings-button { text-decoration: none; }
+.settings-button:hover { background: rgba(var(--hermes-ink-rgb),0.08); color: var(--hermes-ink); }
+.settings-button:active { transform: translateY(1px); }
 .icon-button {
   display: inline-flex;
   align-items: center;
@@ -617,6 +628,7 @@ button:disabled { cursor: wait; opacity: 0.55; transform: none; }
   padding: 0;
 }
 .icon-button svg { display: block; width: 16px; height: 16px; }
+.brand-mini img { display: block; width: 50px; max-height: 30px; object-fit: contain; object-position: left center; }
 
 .status-card,
 .composer,
@@ -1473,6 +1485,33 @@ button:disabled { cursor: wait; opacity: 0.55; transform: none; }
   cursor: zoom-in;
   vertical-align: middle;
 }
+.generated-image-inspectable {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  cursor: zoom-in;
+}
+.generated-image-inspectable .generated-image-inspect {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(var(--hermes-ink-rgb),0.42);
+  background: var(--hermes-paper);
+  color: var(--hermes-ink);
+  font: 17px/1 var(--hermes-font-mono);
+  opacity: 0.88;
+}
+.generated-image-inspectable:hover .generated-image-inspect,
+.generated-image-inspectable:focus-visible .generated-image-inspect {
+  border-color: var(--hermes-accent);
+  background: var(--hermes-accent);
+  color: var(--hermes-paper);
+  opacity: 1;
+}
 .generated-image-unavailable {
   margin: 10px 0;
   padding: 9px 10px;
@@ -1493,20 +1532,37 @@ button:disabled { cursor: wait; opacity: 0.55; transform: none; }
 }
 .generated-image-lightbox-frame {
   display: grid;
-  width: min(100%, 980px);
+  width: fit-content;
+  max-width: min(100%, 980px);
   max-height: calc(100dvh - 40px);
   gap: 9px;
-  padding: 9px;
+  padding: 6px;
   border: 1px solid rgba(var(--hermes-accent-rgb),0.6);
   background: var(--hermes-paper);
   box-shadow: 0 18px 60px rgba(0,0,0,0.42);
 }
-.generated-image-lightbox-frame > img {
+.generated-image-lightbox-stage {
+  width: fit-content;
+  max-width: calc(100vw - 52px);
+  max-height: calc(100dvh - 96px);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  touch-action: none;
+}
+.generated-image-lightbox-stage[data-zoomed] { cursor: grab; }
+.generated-image-lightbox-stage[data-dragging] { cursor: grabbing; }
+.generated-image-lightbox-stage > img {
   display: block;
-  width: 100%;
+  width: auto;
+  max-width: calc(100vw - 52px);
   max-height: calc(100dvh - 116px);
   object-fit: contain;
+  transform-origin: center;
+  transition: transform 120ms ease-out;
+  user-select: none;
 }
+.generated-image-lightbox-stage[data-dragging] > img { transition: none; }
 .generated-image-lightbox-actions {
   display: flex;
   justify-content: flex-end;
@@ -2681,6 +2737,15 @@ textarea:focus, input:focus, select:focus { border-color: var(--hermes-accent); 
 .context-popover header { align-items: flex-start; color: rgba(var(--hermes-fg-rgb),0.86); }
 .context-popover header span { font-size: 10px; letter-spacing: 0.14em; }
 .context-popover header strong { max-width: 66%; font-size: 11px; font-weight: 400; text-align: right; line-height: 1.25; }
+.context-section-label {
+  margin: 11px 0 0;
+  padding-top: 9px;
+  border-top: 1px solid rgba(var(--hermes-fg-rgb),0.18);
+  color: rgba(var(--hermes-fg-rgb),0.72);
+  font: 700 9px/1.2 var(--hermes-font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
 .context-popover dl {
   display: grid;
   grid-template-columns: minmax(92px, 0.8fr) minmax(0, 1.2fr);
@@ -2689,6 +2754,7 @@ textarea:focus, input:focus, select:focus { border-color: var(--hermes-accent); 
   font-size: 10px;
   line-height: 1.25;
 }
+.context-popover .context-runtime-breakdown { margin-top: 7px; }
 .context-popover dt { color: rgba(var(--hermes-fg-rgb),0.62); }
 .context-popover dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
 .context-control-row {

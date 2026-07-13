@@ -1,6 +1,6 @@
 # Security Notes
 
-Hermes Browser Extension v0.1.10 is intentionally read-only.
+Hermes Browser Extension v0.1.11 is intentionally read-only.
 
 ## Current permission model
 
@@ -11,6 +11,7 @@ The extension asks for:
 - `activeTab` — interact with the active tab after the user opens the extension.
 - `scripting` — inject/read the content script when needed.
 - `storage` — store local settings and the API key/browser token.
+- `downloads` — save a generated image or artifact only after the user explicitly chooses Download.
 - `http://*/*` and `https://*/*` host permissions — read normal web pages in the active browser window.
 - `http://127.0.0.1/*` and `http://localhost/*` — talk to the local Hermes Gateway API.
 
@@ -19,7 +20,6 @@ The extension does **not** ask for:
 - `debugger`
 - `nativeMessaging`
 - `webNavigation`
-- `downloads`
 - `cookies`
 - `history`
 - `bookmarks`
@@ -46,21 +46,21 @@ v0.1 refuses to read:
 
 This is a conservative first pass, not a complete security boundary.
 
-v0.1.10 also redacts sensitive tab titles and URLs before prompt assembly so restricted open tabs do not leak through the open-tabs summary or active-tab prompt fields.
+v0.1.11 redacts sensitive tab titles and URLs before prompt assembly so restricted tabs do not leak through active, selected, open-tab, pinned-scope, prompt, receipt, or payload-hash fields. Credential-bearing query/hash parameters are decoded before classification, including nested encodings and common signed-URL credential/signature fields.
 
 ## API key / browser token storage
 
-The Hermes API key/browser token is stored in `chrome.storage.local` for the extension. It is masked after save, and v0.1.10 includes **Clear stored token** in Settings.
+The Hermes API key/browser token is stored in `chrome.storage.local` for the extension. It is masked after save, and v0.1.11 includes **Clear stored token** in Settings.
 
 Do not publish screenshots or exported extension storage containing the key.
 
 ## Optional companion plugin
 
-v0.1.10 includes an optional fail-soft companion plugin that reads Browser Context Protocol prompt blocks from Hermes conversations and exposes sanitized context status/tools/hooks to the agent. It does not register API-server routes, make network calls, use `nativeMessaging`, request `debugger`, or enable browser-control/page-action channels.
+v0.1.11 includes an optional fail-soft companion plugin that reads Browser Context Protocol prompt blocks from Hermes conversations and exposes sanitized context status/tools/hooks to the agent. It does not register API-server routes, make network calls, use `nativeMessaging`, request `debugger`, or enable browser-control/page-action channels.
 
 ## Runtime diagnostics
 
-v0.1.10 can show a connected-with-warning diagnostic when the Hermes API server is reachable but upstream Hermes Agent raises a runtime/tool traceback. These diagnostics are redacted before display and do not grant the extension browser-control permissions. Copy Diagnostics produces a support block that strips tokens, cookies, page text, selected text, tab titles, and full tab URLs.
+v0.1.11 can show a connected-with-warning diagnostic when the Hermes API server is reachable but upstream Hermes Agent raises a runtime/tool traceback. These diagnostics are redacted before display and do not grant the extension browser-control permissions. Copy Diagnostics produces a support block that strips tokens, cookies, page text, selected text, tab titles, and full tab URLs.
 
 ## Related docs
 

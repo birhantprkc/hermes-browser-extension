@@ -2,7 +2,7 @@ export const CONNECTION_SCHEMA_VERSION = 1;
 
 export const CONNECTION_MODES = Object.freeze([
   { value: 'local', label: 'Local gateway' },
-  { value: 'cloud', label: 'Hermes Cloud' },
+  { value: 'cloud', label: 'Hermes Cloud Preview' },
   { value: 'remote', label: 'Remote gateway' },
 ]);
 
@@ -15,10 +15,64 @@ export const CONNECTION_TRANSPORTS = Object.freeze({
 
 const VALID_MODES = new Set(CONNECTION_MODES.map((mode) => mode.value));
 const VALID_TRANSPORTS = new Set(Object.values(CONNECTION_TRANSPORTS));
+const API_KEY_TRANSPORTS = new Set([
+  CONNECTION_TRANSPORTS.LOCAL_API,
+  CONNECTION_TRANSPORTS.REMOTE_API,
+]);
+const TICKET_TRANSPORTS = new Set([
+  CONNECTION_TRANSPORTS.CLOUD_TICKET_WS,
+  CONNECTION_TRANSPORTS.REMOTE_DASHBOARD,
+]);
 
 export function normalizeConnectionMode(value = 'local') {
   const mode = String(value || '').trim().toLowerCase();
   return VALID_MODES.has(mode) ? mode : 'local';
+}
+
+export function normalizeConnectionTransport(value = '') {
+  const transport = String(value || '').trim();
+  return VALID_TRANSPORTS.has(transport) ? transport : CONNECTION_TRANSPORTS.LOCAL_API;
+}
+
+export function transportRequiresApiKey(value = '') {
+  return API_KEY_TRANSPORTS.has(normalizeConnectionTransport(value));
+}
+
+export function transportUsesDashboardTicket(value = '') {
+  return TICKET_TRANSPORTS.has(normalizeConnectionTransport(value));
+}
+
+export function apiCredentialSatisfied(input = {}) {
+  if (normalizeConnectionMode(input?.connectionMode) === 'cloud') return true;
+  const settings = migrateConnectionSettings(input);
+  const transport = VALID_TRANSPORTS.has(String(input?.connectionTransport || '').trim())
+    ? input.connectionTransport
+    : settings.connectionTransport;
+  return !transportRequiresApiKey(transport)
+    || Boolean(String(settings.apiKey || '').trim());
+}
+
+export function isLoopbackGatewayUrl(raw = '') {
+  try {
+    const host = new URL(String(raw || '').trim()).hostname.toLowerCase();
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+  } catch {
+    return false;
+  }
+}
+
+export function sanitizeGatewayUrlForConnectionMode({ connectionMode, gatewayUrl = '', localDefaultUrl = '' } = {}) {
+  const mode = normalizeConnectionMode(connectionMode);
+  const raw = String(gatewayUrl || '').trim();
+  if (mode !== 'cloud') return raw;
+  if (!raw || raw === String(localDefaultUrl || '').trim() || isLoopbackGatewayUrl(raw)) return '';
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return '';
+    return parsed.origin;
+  } catch {
+    return '';
+  }
 }
 
 function legacyProductMode(gatewayMode) {
@@ -92,7 +146,13 @@ export function connectionModePreviewUrl({
   const localDefault = String(localDefaultUrl || '').trim();
   const transportDefault = String(transportDefaultUrl || '').trim();
 
+  if (mode === 'cloud') {
+    return sanitizeGatewayUrlForConnectionMode({
+      connectionMode: mode,
+      gatewayUrl: current,
+      localDefaultUrl: localDefault,
+    });
+  }
   if (current && current !== localDefault) return current;
-  if (mode === 'cloud') return '';
   return transportDefault || localDefault;
 }

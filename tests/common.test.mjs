@@ -20,6 +20,7 @@ import {
   classifyGatewayError,
   composerKeyAction,
   contextAccountingSnapshot,
+  contextCompactionState,
   collectReadablePageText,
   composerControlState,
   contextChipSummary,
@@ -429,6 +430,11 @@ test('isRestrictedUrl blocks browser internals and sensitive account categories'
   assert.equal(isRestrictedUrl('https://example.com/docs#%77allet'), true);
   assert.equal(isRestrictedUrl('https://example.com/%62ank'), true);
   assert.equal(isRestrictedUrl('https://example.com/search?q=my%62ank%'), true);
+  assert.equal(isRestrictedUrl('https://example.com/docs?api_key=browser-secret-value'), true);
+  assert.equal(isRestrictedUrl('https://example.com/docs?client%5Fsecret=browser-secret-value'), true);
+  assert.equal(isRestrictedUrl('https://example.com/docs?x-api-key=browser-secret-value'), true);
+  assert.equal(isRestrictedUrl('https://bucket.s3.amazonaws.com/file?X-Amz-Credential=browser-secret-value&X-Amz-Signature=browser-secret-value'), true);
+  assert.equal(isRestrictedUrl('https://example.com/docs?next=public'), false);
 });
 
 test('privacySafeTabForPrompt redacts sensitive tab titles and URLs before prompt assembly', () => {
@@ -458,6 +464,17 @@ test('privacySafeTabForPrompt redacts sensitive tab titles and URLs before promp
   assert.doesNotMatch(prompt, /My Bank|accounts\/1234/);
   assert.match(prompt, /Active tab title: \(restricted tab\)/);
   assert.match(prompt, /Active tab URL: \(omitted by privacy guard\)/);
+
+  const credentialPrompt = buildHermesPrompt({
+    userText: 'Summarize this page.',
+    activeTab: { title: 'Credential callback', url: 'https://example.com/docs?client_secret=browser-secret-value' },
+    tabs: [{ title: 'Credential callback', url: 'https://example.com/docs?client_secret=browser-secret-value', active: true }],
+    selectedTabs: [{ title: 'Credential callback', url: 'https://example.com/docs#token=browser-secret-value' }],
+    pageContext: { restricted: false, text: 'Safe text.', selectedText: '', meta: {} },
+    settings: DEFAULT_SETTINGS,
+  });
+  assert.doesNotMatch(credentialPrompt, /browser-secret-value/);
+  assert.match(credentialPrompt, /Active tab URL: \(omitted by privacy guard\)/);
 });
 
 test('connection settings expose a three-mode product schema without removing legacy transports', () => {
@@ -1339,6 +1356,8 @@ test('normalizeHermesSessions and groupSessionsForMenu mirror Hermes Desktop sou
   assert.equal(sessions[1].thresholdTokens, 316_200);
   assert.equal(sessions[1].usagePercent, 7.95);
   assert.equal(sessions[1].compressionCount, 0);
+  assert.equal(sessions[1].compressionCountKnown, true);
+  assert.equal(sessions[0].compressionCountKnown, false);
   const groups = groupSessionsForMenu(sessions, 'api_1');
   assert.deepEqual(groups.map((group) => group.label), ['Hermes Browser Extension', 'API', 'Telegram']);
   assert.equal(groups[1].sessions[0].selected, true);
@@ -1940,6 +1959,65 @@ test('context accounting restores persisted session context when live runtime me
   assert.equal(result.source, 'session');
 });
 
+test('context compaction state honors runtime thresholds without hardcoding 85 percent', () => {
+  const due = contextCompactionState({
+    accounting: { liveContextTokens: 320_000, contextLimitTokens: 372_000, source: 'session' },
+    session: { thresholdTokens: 316_200, compressionCount: 2 },
+  });
+  assert.equal(due.thresholdTokens, 316_200);
+  assert.equal(due.thresholdPercent, 85);
+  assert.equal(due.compressionCount, 2);
+  assert.equal(due.compressionCountKnown, true);
+  assert.equal(due.state, 'due');
+  assert.match(due.detail, /Compaction due on the next Hermes turn/i);
+
+  const overLimit = contextCompactionState({
+    accounting: { liveContextTokens: 410_000, contextLimitTokens: 372_000, source: 'session' },
+    runtime: { threshold_tokens: 300_000, compression_count: 0 },
+  });
+  assert.equal(overLimit.state, 'over-limit');
+  assert.match(overLimit.detail, /recover before the next model call/i);
+
+  const custom = contextCompactionState({
+    accounting: { liveContextTokens: 120_000, contextLimitTokens: 400_000, source: 'runtime' },
+    runtime: { threshold_tokens: 200_000 },
+  });
+  assert.equal(custom.thresholdPercent, 50);
+  assert.equal(custom.state, 'healthy');
+});
+
+test('context compaction state never invents a 100 percent trigger when Hermes reports no threshold', () => {
+  const unknownThreshold = contextCompactionState({
+    accounting: { liveContextTokens: 1_300, contextLimitTokens: 400_000, source: 'runtime' },
+    runtime: {},
+    session: { compressionCount: 0 },
+  });
+
+  assert.equal(unknownThreshold.thresholdTokens, 0);
+  assert.equal(unknownThreshold.thresholdPercent, 0);
+  assert.equal(unknownThreshold.compressionCount, 0);
+  assert.equal(unknownThreshold.compressionCountKnown, true);
+  assert.equal(unknownThreshold.state, 'unknown');
+  assert.match(unknownThreshold.detail, /trigger telemetry is unavailable/i);
+  assert.doesNotMatch(unknownThreshold.detail, /100%/);
+});
+
+test('context compaction state distinguishes missing counts from an explicit zero', () => {
+  const missing = contextCompactionState({
+    accounting: {
+      source: 'local-estimate',
+      liveContextTokens: 112,
+      contextLimitTokens: 1_000_000,
+      percentUsed: 0.01,
+    },
+  });
+
+  assert.equal(missing.compressionCount, 0);
+  assert.equal(missing.compressionCountKnown, false);
+  assert.match(missing.detail, /local next-request estimate/i);
+  assert.match(missing.detail, /did not report session compaction telemetry/i);
+});
+
 test('context meter display is one accurate session context meter without cumulative spend copy', () => {
   const accounting = contextAccountingSnapshot({
     localPromptTokens: 120,
@@ -1958,6 +2036,17 @@ test('context meter display is one accurate session context meter without cumula
   assert.doesNotMatch(display.detail, /spend|last turn|cumulative|next prompt/i);
   assert.match(display.title, /50,000 session context tokens used of 1,000,000 available/);
   assert.doesNotMatch(display.title, /spend|last turn|cumulative/i);
+});
+
+test('context meter labels persisted session telemetry as session context rather than a next-request estimate', () => {
+  const display = contextMeterDisplay({
+    accounting: { liveContextTokens: 29_577, contextLimitTokens: 372_000, source: 'session' },
+  });
+
+  assert.match(display.detail, /persisted session telemetry/i);
+  assert.match(display.detail, /session context/i);
+  assert.doesNotMatch(display.detail, /next request estimate/i);
+  assert.match(display.title, /session context tokens used/i);
 });
 
 test('context meter labels local prompt estimates without claiming they are live session context', () => {
@@ -2555,7 +2644,7 @@ test('settings dialog render path refreshes appearance theme cards on open', () 
     'settings must reset scroll after the dialog is visible'
   );
   assert.ok(
-    match[1].indexOf('settingsDialog.scrollTo') < match[1].indexOf('apiKeyInput.focus'),
+    match[1].indexOf('settingsDialog.scrollTo') < match[1].indexOf("mode === 'cloud' ? els.connectButton : els.gatewayUrlInput"),
     'settings must reset scroll before focusing an input can move it'
   );
 });

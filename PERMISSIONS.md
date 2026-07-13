@@ -2,13 +2,14 @@
 
 Hermes Browser Extension is a Chrome/Edge/Chromium MV3 side panel for connecting the active browser page to your configured Hermes Agent runtime.
 
-This document describes the shipped v0.1.10 permission model.
+This document describes the shipped v0.1.11 permission model.
 
 ## Required extension permissions
 
 | Permission | Why it is needed |
 | --- | --- |
 | `activeTab` | Lets the extension inspect the currently active tab after the user opens/uses the side panel. |
+| `downloads` | Saves generated images or artifacts only after the user explicitly chooses Download. It is not used to inspect download history. |
 | `scripting` | Lets the extension inject its read-only context collector into normal `http://` and `https://` pages when the content script is missing/stale. |
 | `sidePanel` | Provides the browser side-panel UI. |
 | `storage` | Stores local extension settings such as Gateway URL, selected session/model/profile, appearance, and the saved API key/browser token. |
@@ -18,7 +19,7 @@ This document describes the shipped v0.1.10 permission model.
 
 | Permission | Why it is optional |
 | --- | --- |
-| `audioCapture` | Requested only when voice dictation needs microphone capture from an extension page. If Hermes audio transcription is unavailable, v0.1.10 can use Browser speech fallback when Chromium exposes Web Speech. |
+| `audioCapture` | Requested only when voice dictation needs microphone capture from an extension page. If Hermes audio transcription is unavailable, v0.1.11 can use Browser speech fallback when Chromium exposes Web Speech. |
 
 ## Host permissions
 
@@ -35,7 +36,7 @@ The current alpha manifest includes:
 
 These host permissions let the side panel read context from normal web pages and connect to local or remote Hermes Gateway/API servers.
 
-v0.1.10 keeps this host-permission surface unchanged while adding runtime visibility through the Tool Activity Strip, connected-with-warning diagnostics, and redacted Copy Diagnostics support reports. A narrower optional-host-permissions migration is intentionally deferred until it can be shipped without breaking load-unpacked context capture.
+v0.1.11 keeps this host-permission surface unchanged while adding Hermes Web, runtime visibility, connected-with-warning diagnostics, and redacted Copy Diagnostics support reports. A narrower optional-host-permissions migration is intentionally deferred until it can be shipped without breaking load-unpacked context capture.
 
 The extension still blocks browser-internal and sensitive categories in code, including:
 
@@ -44,13 +45,12 @@ The extension still blocks browser-internal and sensitive categories in code, in
 
 ## Permissions not requested
 
-Hermes Browser Extension v0.1.10 does **not** request:
+Hermes Browser Extension v0.1.11 does **not** request:
 
 - `debugger`
 - `nativeMessaging`
 - `cookies`
 - `history`
-- `downloads`
 - `bookmarks`
 - browser-control permissions for click/type/form-submit automation
 
