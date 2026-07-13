@@ -504,6 +504,10 @@ Useful links:
  </picture>
 </a>
 
+## Contributors
+
+External contributions that have shipped are credited in [`CONTRIBUTORS.md`](CONTRIBUTORS.md).
+
 ## Author
 
 Built by **Jon Komet** (`@abundantbeing`).
