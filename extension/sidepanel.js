@@ -86,7 +86,14 @@ import {
 } from './lib/appearance-themes.mjs';
 import { createImageViewerState, imageViewerReducer } from './lib/image-viewer.mjs';
 import { extractYouTubeVideoId } from './lib/transcript.mjs';
-import { buildDashboardWsUrl, createGatewayClient, WS_EVENTS, WS_METHODS } from './lib/gateway-ws.mjs';
+import {
+  buildDashboardWsUrl,
+  createGatewayClient,
+  establishGatewaySession,
+  remoteStoredSessionIdForGateway,
+  WS_EVENTS,
+  WS_METHODS,
+} from './lib/gateway-ws.mjs';
 import {
   dashboardTrustPrompt,
   findDashboardTab,
@@ -4197,16 +4204,19 @@ async function createHermesBrowserSession({ title = makeBrowserSessionTitle(), f
   const requestProvider = preferredModel?.provider || preferredBinding?.provider || '';
   if (isRemoteWsMode()) {
     const connection = await ensureRemoteWsClient();
-    const result = await connection.client.request(WS_METHODS.sessionCreate, {
-      title,
-      model: requestModel,
-      provider: requestProvider || undefined,
-      reasoning_effort: preferredOptions.thinkingEnabled ? preferredOptions.reasoningEffort : 'none',
-      fast: preferredOptions.fastMode,
+    const { liveId, storedId } = await establishGatewaySession({
+      client: connection.client,
+      createParams: {
+        title,
+        model: requestModel,
+        provider: requestProvider || undefined,
+        reasoning_effort: preferredOptions.thinkingEnabled ? preferredOptions.reasoningEffort : 'none',
+        fast: preferredOptions.fastMode,
+      },
     });
-    const id = result?.session_id;
-    if (!id) throw new Error('Dashboard did not return a session id.');
-    connection.wsSessionId = id;
+    connection.wsSessionId = liveId;
+    connection.wsStoredSessionId = storedId;
+    const id = storedId;
     const session = normalizeHermesSessions({ sessions: [{ id, title, source: settings.sessionSource || DEFAULT_SETTINGS.sessionSource }] })[0]
       || { id, title, source: settings.sessionSource };
     availableSessions = normalizeHermesSessions({ sessions: [session, ...availableSessions.filter((item) => item.id !== id)] });
@@ -4214,6 +4224,10 @@ async function createHermesBrowserSession({ title = makeBrowserSessionTitle(), f
       ...settings,
       sessionId: id,
       sessionTitle: session.title || title,
+      remoteDashboardSession: {
+        storedSessionId: storedId,
+        gatewayUrl: connection.baseUrl,
+      },
       model: preferredModel?.id || preferredBinding?.modelId || settings.model,
       modelContextTokens: preferredModel?.contextTokens || preferredBinding?.contextTokens || settings.modelContextTokens || 0,
       extensionPreferredModel: preferredBinding,
@@ -4286,17 +4300,47 @@ async function createHermesBrowserSession({ title = makeBrowserSessionTitle(), f
 async function openHermesSession(session) {
   els.sessionMenu.hidden = true;
   els.sessionMenuButton.setAttribute('aria-expanded', 'false');
+  const requestedSessionId = session.id;
+  let liveSessionId = session.id;
   if (isRemoteWsMode()) {
     try {
       const connection = await ensureRemoteWsClient();
-      await connection.client.request(WS_METHODS.sessionResume, { session_id: session.id });
-      connection.wsSessionId = session.id;
+      const { liveId, storedId } = await establishGatewaySession({
+        client: connection.client,
+        storedSessionId: session.id,
+      });
+      connection.wsSessionId = liveId;
+      connection.wsStoredSessionId = storedId;
+      liveSessionId = liveId;
+      session = { ...session, id: storedId };
+      availableSessions = normalizeHermesSessions({
+        sessions: [session, ...availableSessions.filter((item) => item.id !== requestedSessionId && item.id !== storedId)],
+      });
+      settings = {
+        ...settings,
+        remoteDashboardSession: {
+          storedSessionId: storedId,
+          gatewayUrl: connection.baseUrl,
+        },
+      };
     } catch (error) {
       setStatus('error', 'Could not open session', error?.message || String(error));
       return;
     }
   }
-  settings = { ...settings, sessionId: session.id, sessionTitle: session.title || session.id };
+  const inheritedModelBinding = settings.sessionModelBindings?.[requestedSessionId];
+  const inheritedModelOptions = settings.sessionModelOptionBindings?.[requestedSessionId];
+  settings = {
+    ...settings,
+    sessionId: session.id,
+    sessionTitle: session.title || session.id,
+    sessionModelBindings: inheritedModelBinding
+      ? { ...(settings.sessionModelBindings || {}), [session.id]: inheritedModelBinding }
+      : settings.sessionModelBindings,
+    sessionModelOptionBindings: inheritedModelOptions
+      ? { ...(settings.sessionModelOptionBindings || {}), [session.id]: inheritedModelOptions }
+      : settings.sessionModelOptionBindings,
+  };
   applyModelBindingForSession(session);
   applyModelOptionsForSession(session);
   renderModelOptions(availableModels);
@@ -4306,7 +4350,7 @@ async function openHermesSession(session) {
   await saveSessionBindingForActiveScope(session);
   updateSessionLabel();
   renderSessionMenu();
-  await loadSessionMessages(session.id);
+  await loadSessionMessages(liveSessionId);
   setStatus('ok', 'Session opened', `${session.sourceLabel || session.source || 'Hermes'} · ${session.id}`);
 }
 
@@ -5939,7 +5983,7 @@ async function ensureRemoteWsClient() {
     console.warn('[Hermes] remote: WebSocket connect failed:', error?.message || error);
     throw error;
   }
-  const connection = { client, baseUrl, wsSessionId: '' };
+  const connection = { client, baseUrl, wsSessionId: '', wsStoredSessionId: '' };
   client.on('close', () => {
     if (remoteWsConnection === connection) {
       remoteWsConnection = null;
@@ -5953,18 +5997,30 @@ async function ensureRemoteWsClient() {
 async function ensureRemoteWsSession(connection) {
   if (connection.wsSessionId) return connection.wsSessionId;
   const binding = currentEffectiveModelBinding();
-  const result = await connection.client.request(WS_METHODS.sessionCreate, {
-    title: settings.sessionTitle,
-    model: currentModelRequestId(),
-    provider: currentModelProviderSlug() || binding?.provider || undefined,
-    reasoning_effort: normalizeReasoningEffort(settings.reasoningEffort),
-    fast: normalizeFastMode(settings.fastMode),
+  const storedSessionId = remoteStoredSessionIdForGateway(settings.remoteDashboardSession, connection.baseUrl);
+  const { liveId, storedId } = await establishGatewaySession({
+    client: connection.client,
+    storedSessionId,
+    createParams: {
+      title: settings.sessionTitle,
+      model: currentModelRequestId(),
+      provider: currentModelProviderSlug() || binding?.provider || undefined,
+      reasoning_effort: normalizeReasoningEffort(settings.reasoningEffort),
+      fast: normalizeFastMode(settings.fastMode),
+    },
   });
-  connection.wsSessionId = result?.session_id || '';
-  if (!connection.wsSessionId) throw new Error('Dashboard did not return a session id.');
-  // Reflect the dashboard-assigned id so the session menu/label track the live
-  // remote session instead of the local default placeholder.
-  settings = { ...settings, sessionId: connection.wsSessionId };
+  connection.wsSessionId = liveId;
+  connection.wsStoredSessionId = storedId;
+  // Persist only the durable identity. Every socket replacement resumes it and
+  // receives a fresh live id for prompt/history/steer/interrupt RPCs.
+  settings = {
+    ...settings,
+    sessionId: storedId,
+    remoteDashboardSession: {
+      storedSessionId: storedId,
+      gatewayUrl: connection.baseUrl,
+    },
+  };
   if (binding) {
     settings = {
       ...settings,
@@ -5972,14 +6028,14 @@ async function ensureRemoteWsSession(connection) {
       modelContextTokens: modelForBinding(binding)?.contextTokens || binding.contextTokens || settings.modelContextTokens || 0,
       sessionModelBindings: {
         ...(settings.sessionModelBindings || {}),
-        [connection.wsSessionId]: binding,
+        [storedId]: binding,
       },
       modelScopeVersion: DEFAULT_SETTINGS.modelScopeVersion,
     };
   }
   await chrome.storage.local.set({ hermesBrowserSettings: settings });
   updateSessionLabel();
-  return connection.wsSessionId;
+  return liveId;
 }
 
 // Dashboard history content may be a string, an array of text parts, or a

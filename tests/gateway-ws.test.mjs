@@ -1,10 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   buildDashboardWsUrl,
   classifyGatewayFrame,
   createGatewayClient,
+  establishGatewaySession,
+  remoteSessionIdentity,
+  remoteStoredSessionIdForGateway,
   WS_METHODS,
 } from '../extension/lib/gateway-ws.mjs';
 
@@ -58,6 +62,89 @@ test('buildDashboardWsUrl upgrades scheme, keeps path prefix, encodes ticket', (
 test('WS_METHODS exposes Desktop/TUI session steering instead of slash-command injection', () => {
   assert.equal(WS_METHODS.sessionSteer, 'session.steer');
   assert.equal(WS_METHODS.promptSubmit, 'prompt.submit');
+});
+
+test('remoteSessionIdentity keeps live and durable ids distinct', () => {
+  assert.deepEqual(
+    remoteSessionIdentity({ session_id: 'live-A', stored_session_id: 'stored-A' }),
+    { liveId: 'live-A', storedId: 'stored-A' },
+  );
+  assert.deepEqual(
+    remoteSessionIdentity({ session_id: 'live-B', resumed: 'stored-B', session_key: 'stored-B' }, 'stored-A'),
+    { liveId: 'live-B', storedId: 'stored-B' },
+  );
+  assert.deepEqual(
+    remoteSessionIdentity({ session_id: 'live-C' }, 'stored-C'),
+    { liveId: 'live-C', storedId: 'stored-C' },
+  );
+});
+
+test('remote stored session bindings never cross dashboard origins', () => {
+  const binding = {
+    storedSessionId: 'stored-A',
+    gatewayUrl: 'https://one.example/hermes/',
+  };
+  assert.equal(remoteStoredSessionIdForGateway(binding, 'https://one.example/hermes'), 'stored-A');
+  assert.equal(remoteStoredSessionIdForGateway(binding, 'https://two.example/hermes'), '');
+  assert.equal(remoteStoredSessionIdForGateway({ ...binding, storedSessionId: '' }, 'https://one.example/hermes'), '');
+  assert.equal(remoteStoredSessionIdForGateway(null, 'https://one.example/hermes'), '');
+});
+
+test('gateway session reconnect resumes the durable id and routes follow-up RPCs through the fresh live id', async () => {
+  const first = createGatewayClient({ WebSocketImpl: FakeWebSocket });
+  const firstConnect = first.connect('wss://host/api/ws?ticket=first');
+  FakeWebSocket.last._open();
+  FakeWebSocket.last._message({ method: 'event', params: { type: 'gateway.ready', payload: {} } });
+  await firstConnect;
+
+  const creating = establishGatewaySession({ client: first, createParams: { title: 'Durable chat' } });
+  const createFrame = JSON.parse(FakeWebSocket.last.sent.at(-1));
+  assert.equal(createFrame.method, WS_METHODS.sessionCreate);
+  FakeWebSocket.last._message({
+    id: createFrame.id,
+    result: { session_id: 'live-A', stored_session_id: 'stored-A' },
+  });
+  assert.deepEqual(await creating, { action: 'created', liveId: 'live-A', storedId: 'stored-A' });
+
+  first.close();
+
+  const second = createGatewayClient({ WebSocketImpl: FakeWebSocket });
+  const secondConnect = second.connect('wss://host/api/ws?ticket=second');
+  FakeWebSocket.last._open();
+  FakeWebSocket.last._message({ method: 'event', params: { type: 'gateway.ready', payload: {} } });
+  await secondConnect;
+
+  const resuming = establishGatewaySession({
+    client: second,
+    storedSessionId: 'stored-A',
+    createParams: { title: 'must not create' },
+  });
+  const resumeFrame = JSON.parse(FakeWebSocket.last.sent.at(-1));
+  assert.equal(resumeFrame.method, WS_METHODS.sessionResume);
+  assert.deepEqual(resumeFrame.params, { session_id: 'stored-A' });
+  assert.equal(
+    FakeWebSocket.last.sent.map((raw) => JSON.parse(raw)).filter((frame) => frame.method === WS_METHODS.sessionCreate).length,
+    0,
+  );
+  FakeWebSocket.last._message({
+    id: resumeFrame.id,
+    result: { session_id: 'live-B', resumed: 'stored-A', session_key: 'stored-A' },
+  });
+  assert.deepEqual(await resuming, { action: 'resumed', liveId: 'live-B', storedId: 'stored-A' });
+
+  const followUp = second.request(WS_METHODS.sessionHistory, { session_id: 'live-B' });
+  const historyFrame = JSON.parse(FakeWebSocket.last.sent.at(-1));
+  assert.equal(historyFrame.params.session_id, 'live-B');
+  FakeWebSocket.last._message({ id: historyFrame.id, result: { messages: [] } });
+  await followUp;
+});
+
+test('sidepanel reconnect wiring persists the durable id and resumes only on the bound dashboard', () => {
+  const source = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
+  assert.match(source, /remoteStoredSessionIdForGateway\(settings\.remoteDashboardSession, connection\.baseUrl\)/);
+  assert.match(source, /establishGatewaySession\(\{[\s\S]*?storedSessionId,[\s\S]*?createParams:/);
+  assert.match(source, /remoteDashboardSession:\s*\{[\s\S]*?storedSessionId:\s*storedId,[\s\S]*?gatewayUrl:\s*connection\.baseUrl/);
+  assert.match(source, /connection\.wsStoredSessionId\s*=\s*storedId/);
 });
 
 test('classifyGatewayFrame distinguishes responses, errors, events, and noise', () => {

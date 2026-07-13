@@ -89,6 +89,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   maxLocalMessages: 40,
   customModelSources: [],
   trustedDashboardOrigin: '',
+  remoteDashboardSession: null,
 });
 
 export const HERMES_BROWSER_SYSTEM_PROMPT = `You are Hermes running through the Hermes Browser Extension side panel.

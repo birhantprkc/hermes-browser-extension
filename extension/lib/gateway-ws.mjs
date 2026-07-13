@@ -31,6 +31,56 @@ export const WS_EVENTS = Object.freeze({
   error: 'error',
 });
 
+// Gateway sessions have two identities. `session_id` addresses the live
+// runtime on the current WebSocket; the stored id survives disconnects and is
+// the only safe value to persist or pass to session.resume.
+export function remoteSessionIdentity(result = {}, requestedId = '') {
+  const liveId = String(result?.session_id || '').trim();
+  const storedId = String(
+    result?.stored_session_id
+    || result?.resumed
+    || result?.session_key
+    || requestedId
+    || liveId
+    || '',
+  ).trim();
+  return { liveId, storedId };
+}
+
+function comparableGatewayUrl(value = '') {
+  try {
+    const parsed = new URL(String(value || '').trim());
+    parsed.hash = '';
+    parsed.search = '';
+    parsed.pathname = parsed.pathname.replace(/\/+$/, '') || '/';
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    return '';
+  }
+}
+
+export function remoteStoredSessionIdForGateway(binding, gatewayUrl = '') {
+  const storedSessionId = String(binding?.storedSessionId || '').trim();
+  const boundGatewayUrl = comparableGatewayUrl(binding?.gatewayUrl);
+  const currentGatewayUrl = comparableGatewayUrl(gatewayUrl);
+  if (!storedSessionId || !boundGatewayUrl || boundGatewayUrl !== currentGatewayUrl) return '';
+  return storedSessionId;
+}
+
+export async function establishGatewaySession({ client, storedSessionId = '', createParams = {} } = {}) {
+  if (!client?.request) throw new Error('Hermes gateway client is required.');
+  const requestedId = String(storedSessionId || '').trim();
+  const action = requestedId ? 'resumed' : 'created';
+  const result = requestedId
+    ? await client.request(WS_METHODS.sessionResume, { session_id: requestedId })
+    : await client.request(WS_METHODS.sessionCreate, createParams);
+  const { liveId, storedId } = remoteSessionIdentity(result, requestedId);
+  if (!liveId || !storedId) {
+    throw new Error(`Dashboard did not return complete ${action === 'resumed' ? 'resume' : 'session'} identity.`);
+  }
+  return { action, liveId, storedId };
+}
+
 export function buildDashboardWsUrl(baseUrl, ticket) {
   const parsed = new URL(String(baseUrl || ''));
   const scheme = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
