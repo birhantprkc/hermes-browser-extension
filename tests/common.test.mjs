@@ -122,6 +122,15 @@ test('sidepanel startup initializes a fresh panel-open session instead of auto-r
   assert.doesNotMatch(source, /await ensureSessionForActiveScope\(\{ focus: false \}\);\s*await consumePendingVoiceDraft/);
 });
 
+test('sidepanel replays stored history without emptying canonical messages between rows', () => {
+  const source = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
+  const renderer = source.match(/function renderMessagesFromStorage\(\) \{[\s\S]*?\n\}/)?.[0] || '';
+
+  assert.match(renderer, /els\.messages\.innerHTML = '';/);
+  assert.match(renderer, /for \(const message of messages\) addMessage\(message\.role, message\.content, \{ persist: false \}\);/);
+  assert.doesNotMatch(renderer, /messages\s*=\s*\[\]/);
+});
+
 test('sidepanel wires Browser-scoped models and compact session copy/rename actions', () => {
   const source = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
   const css = readFileSync(new URL('../extension/sidepanel.css', import.meta.url), 'utf8');

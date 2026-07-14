@@ -4974,10 +4974,7 @@ async function loadSettings({ restoreMessages = false } = {}) {
 
 function renderMessagesFromStorage() {
   els.messages.innerHTML = '';
-  const old = messages;
-  messages = [];
-  for (const message of old) addMessage(message.role, message.content, { persist: false });
-  messages = old;
+  for (const message of messages) addMessage(message.role, message.content, { persist: false });
   renderEmptyState();
 }
 
