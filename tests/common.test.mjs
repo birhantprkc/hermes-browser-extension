@@ -1197,6 +1197,15 @@ test('renderMarkdown renders GFM tables whose divider uses a single dash per col
   assert.doesNotMatch(html, /\|-\|-\|/);
 });
 
+test('renderMarkdown preserves explicit numbering across separated ordered-list fragments', () => {
+  const html = renderMarkdown('1. First item\n\nExplanation one.\n\n2. Second item\n\nExplanation two.\n\n3) Third item');
+
+  assert.match(html, /<ol><li>First item<\/li><\/ol>/);
+  assert.match(html, /<ol start="2"><li>Second item<\/li><\/ol>/);
+  assert.match(html, /<ol start="3"><li>Third item<\/li><\/ol>/);
+  assert.match(renderMarkdown('7. Start here'), /<ol start="7"><li>Start here<\/li><\/ol>/);
+});
+
 test('normalizeHermesModels converts OpenAI-style /v1/models payload and keeps selected fallback', () => {
   const models = normalizeHermesModels({ data: [{ id: 'hermes-agent' }, { id: 'nous/nemotron', context_length: 131072 }] }, 'custom/local');
   assert.deepEqual(models.map((model) => model.id), ['hermes-agent', 'nous/nemotron', 'custom/local']);

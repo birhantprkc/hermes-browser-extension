@@ -1547,9 +1547,11 @@ function flushParagraph(out, paragraph) {
 function flushList(out, list) {
   if (!list.items.length) return;
   const tag = list.ordered ? 'ol' : 'ul';
-  out.push(`<${tag}>${list.items.map((item) => `<li>${renderListItem(item)}</li>`).join('')}</${tag}>`);
+  const start = list.ordered && list.start !== 1 ? ` start="${list.start}"` : '';
+  out.push(`<${tag}${start}>${list.items.map((item) => `<li>${renderListItem(item)}</li>`).join('')}</${tag}>`);
   list.items = [];
   list.ordered = false;
+  list.start = 1;
 }
 
 function renderListItem(item = '') {
@@ -1565,7 +1567,7 @@ export function renderMarkdown(value = '') {
   const lines = text.replace(/\r\n/g, '\n').split('\n');
   const out = [];
   const paragraph = [];
-  const list = { ordered: false, items: [] };
+  const list = { ordered: false, start: 1, items: [] };
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
     const trimmed = line.trim();
@@ -1638,13 +1640,16 @@ export function renderMarkdown(value = '') {
       continue;
     }
     const bullet = /^[-*+]\s+(.+)$/.exec(trimmed);
-    const ordered = /^\d+[.)]\s+(.+)$/.exec(trimmed);
+    const ordered = /^(\d+)[.)]\s+(.+)$/.exec(trimmed);
     if (bullet || ordered) {
       flushParagraph(out, paragraph);
       const wantOrdered = Boolean(ordered);
-      if (list.items.length && list.ordered !== wantOrdered) flushList(out, list);
+      const orderedIndex = ordered ? Number(ordered[1]) : 1;
+      const expectedIndex = list.start + list.items.length;
+      if (list.items.length && (list.ordered !== wantOrdered || (wantOrdered && orderedIndex !== expectedIndex))) flushList(out, list);
       list.ordered = wantOrdered;
-      list.items.push((bullet || ordered)[1]);
+      if (!list.items.length) list.start = orderedIndex;
+      list.items.push(bullet ? bullet[1] : ordered[2]);
       continue;
     }
     flushList(out, list);
