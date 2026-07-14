@@ -189,6 +189,30 @@ test('sidepanel and Hermes Web share the display-only Browser request formatter'
   assert.match(web, /messageDisplayText\(role, rawText\)/);
 });
 
+test('requiresForeignSessionConfirmation protects only unapproved non-Browser sessions', () => {
+  assert.equal(typeof common.requiresForeignSessionConfirmation, 'function');
+  assert.equal(common.requiresForeignSessionConfirmation({ id: 'browser-1', source: common.DEFAULT_SETTINGS.sessionSource }), false);
+  assert.equal(common.requiresForeignSessionConfirmation({ id: 'api-1', source: 'api' }), true);
+  assert.equal(common.requiresForeignSessionConfirmation({ id: 'api-1', source: 'api' }, ['api-1']), false);
+  assert.equal(common.requiresForeignSessionConfirmation({ source: 'api' }), false);
+});
+
+test('sidepanel requires an on-brand source decision before sending into a foreign session', () => {
+  const html = readFileSync(new URL('../extension/sidepanel.html', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../extension/sidepanel.css', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
+  const sender = source.match(/async function askHermes\([\s\S]*?\n\}/)?.[0] || '';
+
+  assert.match(html, /id="sessionOwnershipNotice"/);
+  assert.match(html, /data-session-ownership-action="new-browser"/);
+  assert.match(html, /data-session-ownership-action="continue"/);
+  assert.match(css, /\.session-ownership-notice/);
+  assert.match(css, /var\(--hermes-accent/);
+  assert.match(source, /requiresForeignSessionConfirmation\(session, approvedForeignSessionIds\)/);
+  assert.ok(sender.indexOf('guardForeignSessionSend(') < sender.indexOf('autoTitleForCurrentTurn'), 'ownership guard must run before title derivation');
+  assert.match(source, /await beginHermesBrowserDraft\(\{ focus: false \}\);[\s\S]*await askHermes/);
+});
+
 test('sidepanel wires Browser-scoped models and compact session copy/rename actions', () => {
   const source = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
   const css = readFileSync(new URL('../extension/sidepanel.css', import.meta.url), 'utf8');

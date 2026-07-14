@@ -2156,6 +2156,61 @@ body.startup-active .topbar #settingsButton {
 }
 .context-scope-menu .context-scope-include-toggle:not(.selected) { opacity: 0.7; }
 .composer-help { margin: 6px 0 0; color: var(--hermes-muted); font-size: 10px; line-height: 1.25; text-transform: uppercase; letter-spacing: 0.1em; }
+.session-ownership-notice {
+  margin: 2px 0 8px;
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid rgba(var(--hermes-accent-rgb),0.5);
+  border-left: 3px solid var(--hermes-accent);
+  background:
+    linear-gradient(135deg, rgba(var(--hermes-accent-rgb),0.14), transparent 58%),
+    var(--hermes-paper);
+  color: var(--hermes-ink);
+  box-shadow: 0 8px 24px rgba(var(--hermes-fg-rgb),0.08);
+}
+.session-ownership-notice[hidden] { display: none; }
+.session-ownership-copy { display: grid; gap: 3px; min-width: 0; }
+.session-ownership-kicker {
+  color: var(--hermes-accent);
+  font-family: var(--hermes-font-ui);
+  font-size: 9px;
+  line-height: 1;
+  letter-spacing: 0.16em;
+}
+.session-ownership-copy strong {
+  font-family: var(--hermes-font-ui);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.15;
+}
+.session-ownership-copy > span:last-child {
+  color: var(--hermes-muted);
+  font-family: var(--hermes-font-mono);
+  font-size: 10px;
+  line-height: 1.35;
+}
+.session-ownership-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.session-ownership-actions button {
+  min-height: 28px;
+  padding: 6px 9px;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+}
+.session-ownership-actions button[data-session-ownership-action="new-browser"] {
+  border-color: var(--hermes-ink);
+  background: var(--hermes-ink);
+  color: var(--hermes-paper);
+}
+.session-ownership-actions button[data-session-ownership-action="new-browser"]:hover {
+  border-color: var(--hermes-accent);
+  background: var(--hermes-accent);
+  color: var(--hermes-paper);
+}
 .queue-notice {
   margin: 7px 0 0;
   border: 1px solid rgba(var(--hermes-accent-rgb),0.48);

@@ -62,6 +62,7 @@ import {
   pairingFailureMessage,
   queuedMessageControlState,
   reasoningEffortShortLabel,
+  requiresForeignSessionConfirmation,
   renderMarkdown,
   runtimeValueMatches,
   safeTab,
@@ -234,6 +235,9 @@ const els = {
   contextScopeButton: $('#contextScopeButton'),
   contextScopeLabel: $('#contextScopeLabel'),
   contextScopeMenu: $('#contextScopeMenu'),
+  sessionOwnershipNotice: $('#sessionOwnershipNotice'),
+  sessionOwnershipTitle: $('#sessionOwnershipTitle'),
+  sessionOwnershipDetail: $('#sessionOwnershipDetail'),
   composerDropZone: $('#composerDropZone'),
   dropOverlay: $('#dropOverlay'),
   skillMenu: $('#skillMenu'),
@@ -360,6 +364,8 @@ let lastRemoteDiagnostic = null;
 let lastVisibleStatus = null;
 const openSessionGroups = new Set();
 const closedSessionGroups = new Set();
+const approvedForeignSessionIds = new Set();
+let pendingForeignTurn = null;
 let sending = false;
 let queuedTurn = null;
 let activeAbortController = null;
@@ -4395,6 +4401,93 @@ function isHermesBrowserSession(session = {}) {
   return String(session.source || '').toLowerCase() === DEFAULT_SETTINGS.sessionSource;
 }
 
+function activeSessionForSend() {
+  const sessionId = String(settings.sessionId || '').trim();
+  if (!sessionId) return null;
+  return availableSessions.find((session) => session.id === sessionId) || {
+    id: sessionId,
+    title: settings.sessionTitle || sessionId,
+    source: DEFAULT_SETTINGS.sessionSource,
+  };
+}
+
+function foreignSessionSourceLabel(session = {}) {
+  const label = String(session.sourceLabel || session.source || 'another Hermes surface').trim();
+  if (label.toLowerCase() === 'api') return 'API';
+  if (label.toLowerCase() === 'cli') return 'CLI';
+  if (label.toLowerCase() === 'webui') return 'Hermes Web';
+  return label;
+}
+
+function dismissSessionOwnershipNotice() {
+  pendingForeignTurn = null;
+  if (!els.sessionOwnershipNotice) return;
+  els.sessionOwnershipNotice.hidden = true;
+}
+
+function showSessionOwnershipNotice(session = {}, userText = '', turnAttachments = []) {
+  if (!els.sessionOwnershipNotice) return;
+  const sourceLabel = foreignSessionSourceLabel(session);
+  pendingForeignTurn = {
+    sessionId: String(session.id || ''),
+    userText: String(userText || ''),
+    attachments: [...turnAttachments],
+    fromComposer: String(userText || '').trim() === els.input.value.trim(),
+  };
+  els.sessionOwnershipTitle.textContent = `${sourceLabel} session selected`;
+  els.sessionOwnershipDetail.textContent = `This chat belongs to ${sourceLabel}. Start a Browser chat to keep the turn in Browser history, or continue here intentionally.`;
+  const continueButton = els.sessionOwnershipNotice.querySelector('[data-session-ownership-action="continue"]');
+  if (continueButton) continueButton.textContent = `Continue in ${sourceLabel}`;
+  els.sessionOwnershipNotice.hidden = false;
+  els.sessionOwnershipNotice.querySelector('[data-session-ownership-action="new-browser"]')?.focus();
+}
+
+function guardForeignSessionSend(userText, turnAttachments) {
+  const session = activeSessionForSend();
+  if (!requiresForeignSessionConfirmation(session, approvedForeignSessionIds)) {
+    dismissSessionOwnershipNotice();
+    return true;
+  }
+  showSessionOwnershipNotice(session, userText, turnAttachments);
+  return false;
+}
+
+async function handleSessionOwnershipDecision(event) {
+  const button = event.target.closest('[data-session-ownership-action]');
+  if (!button) return;
+  const session = activeSessionForSend();
+  const pendingTurn = pendingForeignTurn;
+  if (!session || !pendingTurn || session.id !== pendingTurn.sessionId) {
+    dismissSessionOwnershipNotice();
+    return;
+  }
+
+  const userText = pendingTurn.userText;
+  const turnAttachments = pendingTurn.attachments;
+  if (!userText && !turnAttachments.length) {
+    dismissSessionOwnershipNotice();
+    return;
+  }
+
+  const buttons = Array.from(els.sessionOwnershipNotice.querySelectorAll('button'));
+  for (const actionButton of buttons) actionButton.disabled = true;
+  try {
+    if (button.dataset.sessionOwnershipAction === 'continue') {
+      approvedForeignSessionIds.add(session.id);
+      dismissSessionOwnershipNotice();
+      await askHermes(userText, turnAttachments);
+      return;
+    }
+    dismissSessionOwnershipNotice();
+    await beginHermesBrowserDraft({ focus: false });
+    await askHermes(userText, turnAttachments);
+  } catch (error) {
+    setStatus('error', 'Could not change session', error?.message || String(error));
+  } finally {
+    for (const actionButton of buttons) actionButton.disabled = false;
+  }
+}
+
 async function ensureDefaultBrowserSession({ focus = false } = {}) {
   if (!settings.apiKey || settings.sessionId !== DEFAULT_SETTINGS.sessionId) return;
   const current = availableSessions.find((session) => session.id === settings.sessionId);
@@ -6472,6 +6565,7 @@ async function askHermes(userText, turnAttachments = [...attachments]) {
     return false;
   }
 
+  if (!guardForeignSessionSend(userText, turnAttachments)) return false;
   const autoTitle = autoTitleForCurrentTurn(userText);
   sending = true;
     if (!isRemoteWsMode()) {
@@ -7175,6 +7269,7 @@ function bindEvents() {
       setStatus('warn', 'Settings not saved', error?.message || String(error));
     }
   });
+  els.sessionOwnershipNotice?.addEventListener('click', handleSessionOwnershipDecision);
   els.composer.addEventListener('submit', async (event) => {
     event.preventDefault();
     if (sending) {
@@ -7241,6 +7336,7 @@ function bindEvents() {
     handleComposerDrop(event).catch((error) => addMessage('system', `Drop attach failed: ${error?.message || String(error)}`));
   });
   els.input.addEventListener('input', () => {
+    if (pendingForeignTurn?.fromComposer) dismissSessionOwnershipNotice();
     renderContextWindow();
     renderSkillSuggestions();
     updateComposerBusyState();
