@@ -121,7 +121,10 @@ test('full-tab rail centers a theme-aware spinning globe while the Nous girl liv
   assert.match(css, /\.rail-globe-viewport\s*\{[^}]*left:\s*50%;[^}]*height:\s*76px;[^}]*overflow:\s*hidden;[^}]*translateX\(-50%\)/s);
   assert.match(css, /\.rail-brand-video\s*\{[^}]*width:\s*110px;[^}]*height:\s*auto/s);
   assert.match(css, /\.session-rail::before\s*\{[^}]*hermes-browser-web-horizon-ink\.png[^}]*mix-blend-mode:\s*normal;/s);
-  assert.match(read('extension/fulltab-themes.css'), /data-hermes-theme="ember"[^}]*rail-brand-video[^}]*filter:/s);
+  const themes = read('extension/fulltab-themes.css');
+  assert.match(themes, /data-hermes-theme="ember"[^}]*rail-brand-video[^}]*filter:/s);
+  assert.match(themes, /html\[data-hermes-theme="cyberpunk"\]\[data-hermes-mode="light"\]\s+\.rail-globe-viewport\s*\{[^}]*mix-blend-mode:\s*difference;/s);
+  assert.match(themes, /html\[data-hermes-theme="cyberpunk"\]\[data-hermes-mode="light"\]\s+\.rail-brand-video\s*\{[^}]*grayscale\(1\)[^}]*hue-rotate\(280deg\)[^}]*opacity:\s*0\.86;/s);
   assert.match(manifest.content_security_policy.extension_pages, /media-src 'self'/);
 });
 

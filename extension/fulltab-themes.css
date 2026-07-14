@@ -140,6 +140,11 @@ html[data-hermes-theme="midnight"] .rail-brand-video { filter: hue-rotate(28deg)
 html[data-hermes-theme="ember"] .rail-brand-video { filter: grayscale(1) sepia(1) saturate(6) hue-rotate(332deg); }
 html[data-hermes-theme="mono"] .rail-brand-video { filter: grayscale(1) contrast(1.15); }
 html[data-hermes-theme="cyberpunk"] .rail-brand-video { filter: grayscale(1) sepia(1) saturate(8) hue-rotate(78deg); }
+html[data-hermes-theme="cyberpunk"][data-hermes-mode="light"] .rail-globe-viewport { mix-blend-mode: difference; }
+html[data-hermes-theme="cyberpunk"][data-hermes-mode="light"] .rail-brand-video {
+  filter: grayscale(1) sepia(1) saturate(14) hue-rotate(280deg) brightness(0.9);
+  opacity: 0.86;
+}
 html[data-hermes-theme="slate"] .rail-brand-video { filter: grayscale(0.7) sepia(0.24) saturate(1.1) hue-rotate(158deg); }
 html[data-hermes-theme="senter-space"] .rail-brand-video { filter: grayscale(0.25) sepia(0.3) saturate(1.25) hue-rotate(130deg); }
 html[data-hermes-theme="aurora"] .rail-brand-video { filter: grayscale(0.08) sepia(0.28) saturate(2.4) hue-rotate(286deg) brightness(1.08); }
