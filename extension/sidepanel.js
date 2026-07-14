@@ -36,6 +36,7 @@ import {
   isModelRuntimeSelectable,
   isRestrictedUrl,
   isUsableRemoteGatewayUrl,
+  messageDisplayText,
   messagesForLocalCache,
   microphonePermissionHelp,
   modelDisplayName,
@@ -4815,7 +4816,7 @@ function addMessage(role, content, { persist = true } = {}) {
   const node = els.template.content.firstElementChild.cloneNode(true);
   node.classList.add(role);
   node.querySelector('.message-role').textContent = role === 'assistant' ? 'Hermes' : role;
-  renderMessageContentElement(node.querySelector('.message-content'), content || '');
+  renderMessageContentElement(node.querySelector('.message-content'), messageDisplayText(role, content || ''));
   els.messages.appendChild(node);
   requestAnimationFrame(() => {
     els.appScroll.scrollTop = els.appScroll.scrollHeight;

@@ -4,6 +4,7 @@ import {
   contextMeterDisplay,
   estimateTokens,
   groupSessionsForMenu,
+  messageDisplayText,
   normalizeHermesSessions,
   normalizeHermesSkills,
   normalizeToolActivity,
@@ -607,8 +608,9 @@ function renderMessages(messages = []) {
     const content = document.createElement('div');
     content.className = 'web-message-content';
     const rawText = messageText(message.content);
-    const tagged = extractMediaTags(rawText);
-    const media = resolvedGeneratedImageSources(rawText);
+    const visibleText = messageDisplayText(role, rawText);
+    const tagged = extractMediaTags(visibleText);
+    const media = resolvedGeneratedImageSources(visibleText);
     const displayText = stripGeneratedImageEchoes(tagged.text, media);
     if (displayText) content.innerHTML = renderMarkdown(displayText);
     const deferMediaGroup = role === 'assistant'
