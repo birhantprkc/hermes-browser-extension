@@ -801,6 +801,76 @@ export function formatUpdateStatus({
   return `v${current} installed and v${latest} latest. Could not verify commit alignment against GitHub main. ${rebuildInstructions}${dirtyNote}`.trim();
 }
 
+export function shouldShowBrowserIntro({ seen = false, connected = false, messageCount = 0 } = {}) {
+  return !seen && connected && Number(messageCount || 0) === 0;
+}
+
+function updateChangeCategory(message = '') {
+  const type = String(message || '').trim().match(/^([a-z]+)(?:\([^)]*\))?!?:\s*/i)?.[1]?.toLowerCase() || '';
+  if (type === 'fix') return 'FIXED';
+  if (type === 'perf') return 'FASTER';
+  if (type === 'feat') return 'NEW';
+  return 'IMPROVED';
+}
+
+function updateChangeTitle(message = '') {
+  const clean = String(message || '')
+    .split('\n')[0]
+    .replace(/^[a-z]+(?:\([^)]*\))?!?:\s*/i, '')
+    .trim();
+  if (!clean) return 'Internal Browser update';
+  return `${clean.charAt(0).toUpperCase()}${clean.slice(1)}`;
+}
+
+export function updateReviewState({
+  latestVersion = '0.0.0',
+  currentVersion = '0.0.0',
+  commitsBehind = null,
+  commits = [],
+} = {}) {
+  const hasCommitComparison = commitsBehind !== null && typeof commitsBehind !== 'undefined' && commitsBehind !== '';
+  const behind = hasCommitComparison && Number.isFinite(Number(commitsBehind))
+    ? Math.max(0, Number.parseInt(commitsBehind, 10) || 0)
+    : null;
+  const rows = (Array.isArray(commits) ? commits : []).map((commit) => ({
+    sha: shortGitCommit(commit?.sha || ''),
+    title: updateChangeTitle(commit?.message || commit?.commit?.message || ''),
+    category: updateChangeCategory(commit?.message || commit?.commit?.message || ''),
+  }));
+  const groupOrder = ['FIXED', 'FASTER', 'NEW', 'IMPROVED'];
+  const groups = groupOrder
+    .map((label) => ({ label, items: rows.filter((row) => row.category === label) }))
+    .filter((group) => group.items.length);
+  const commitCount = behind ?? rows.length;
+  const versionComparison = compareVersionStrings(latestVersion, currentVersion);
+  const verified = versionComparison !== 0 || behind !== null || rows.length > 0;
+  const available = versionComparison > 0 || commitCount > 0;
+  const current = String(currentVersion || '').replace(/^v/i, '');
+  const latest = String(latestVersion || '').replace(/^v/i, '');
+  const title = available
+    ? 'New Browser update available'
+    : !verified
+      ? 'Browser source alignment unverified'
+      : versionComparison < 0
+        ? 'This Browser build is ahead'
+        : 'Hermes Browser is current';
+  const summary = available
+    ? `${commitCount} commit${commitCount === 1 ? '' : 's'} ready to review · v${latest}`
+    : !verified
+      ? `v${current} is loaded, but this build has no commit metadata to compare with GitHub main.`
+      : versionComparison < 0
+        ? `v${current} is newer than the public package version v${latest}.`
+        : `This Browser build is aligned with v${current}.`;
+  return {
+    available,
+    verified,
+    commitCount,
+    groups,
+    title,
+    summary,
+  };
+}
+
 export function connectionStateForGateway({
   gatewayMode = DEFAULT_SETTINGS.gatewayMode,
   gatewayUrl = DEFAULT_SETTINGS.gatewayUrl,
@@ -1201,6 +1271,36 @@ export function buildHermesModelOptions(settings = DEFAULT_SETTINGS) {
     service_tier: fastMode ? 'priority' : null,
     fast: fastMode,
   };
+}
+
+function runtimeSelectionValue(value, fallback) {
+  const normalized = String(value || '')
+    .replace(/[^a-zA-Z0-9._:/+-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 160);
+  return normalized || fallback;
+}
+
+export function buildHermesRuntimeSelectionNote({ model = '', provider = '', modelOptions = null } = {}) {
+  const options = normalizeAcknowledgedModelOptions(modelOptions)
+    || normalizeAcknowledgedModelOptions(buildHermesModelOptions(DEFAULT_SETTINGS));
+  const thinkingEnabled = options?.thinkingEnabled !== false;
+  const runtimeEffort = thinkingEnabled
+    ? normalizeReasoningEffort(options?.reasoningEffort)
+    : 'none';
+  const reasoningLevel = thinkingEnabled ? reasoningEffortLabel(runtimeEffort) : 'Off';
+  return [
+    '<hermes_browser_runtime_selection>',
+    'These Browser runtime values are authoritative for this turn. If the user asks about model, provider, reasoning, or fast mode, report these exact values instead of inferring them.',
+    `Model: ${runtimeSelectionValue(model, 'Gateway default')}`,
+    `Provider: ${runtimeSelectionValue(provider, 'Hermes runtime')}`,
+    `Thinking: ${thinkingEnabled ? 'On' : 'Off'}`,
+    `Reasoning level: ${reasoningLevel}`,
+    `Runtime effort: ${runtimeEffort}`,
+    `Fast mode: ${options?.fastMode ? 'On' : 'Off'}`,
+    '</hermes_browser_runtime_selection>',
+  ].join('\n');
 }
 
 function positiveTokenNumber(value = 0) {

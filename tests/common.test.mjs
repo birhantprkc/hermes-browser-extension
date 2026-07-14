@@ -114,6 +114,47 @@ test('session startup mode defaults to fresh panel-open sessions', () => {
   assert.equal(shouldCreateFreshSessionOnOpen({ sessionStartupMode: 'resume-last' }), false);
 });
 
+test('Browser intro appears only for the first connected empty chat', () => {
+  assert.equal(typeof common.shouldShowBrowserIntro, 'function');
+  assert.equal(common.shouldShowBrowserIntro({ seen: false, connected: false, messageCount: 0 }), false);
+  assert.equal(common.shouldShowBrowserIntro({ seen: false, connected: true, messageCount: 0 }), true);
+  assert.equal(common.shouldShowBrowserIntro({ seen: true, connected: true, messageCount: 0 }), false);
+  assert.equal(common.shouldShowBrowserIntro({ seen: false, connected: true, messageCount: 1 }), false);
+});
+
+test('updateReviewState turns commit metadata into concise on-brand update groups', () => {
+  assert.equal(typeof common.updateReviewState, 'function');
+  const state = common.updateReviewState({
+    latestVersion: '0.1.12',
+    currentVersion: '0.1.11',
+    commitsBehind: 3,
+    commits: [
+      { sha: 'aaaaaaa1111111', message: 'fix: preserve session refresh confirmation' },
+      { sha: 'bbbbbbb2222222', message: 'perf: overlap Hermes Web startup work' },
+      { sha: 'ccccccc3333333', message: 'feat: add update review' },
+    ],
+  });
+
+  assert.equal(state.available, true);
+  assert.equal(state.commitCount, 3);
+  assert.match(state.summary, /3 commits/);
+  assert.deepEqual(state.groups.map((group) => group.label), ['FIXED', 'FASTER', 'NEW']);
+  assert.deepEqual(state.groups.flatMap((group) => group.items.map((item) => item.title)), [
+    'Preserve session refresh confirmation',
+    'Overlap Hermes Web startup work',
+    'Add update review',
+  ]);
+
+  const unknown = common.updateReviewState({
+    latestVersion: '0.1.11',
+    currentVersion: '0.1.11',
+    commitsBehind: null,
+  });
+  assert.equal(unknown.available, false);
+  assert.equal(unknown.verified, false);
+  assert.match(unknown.title, /unverified/i);
+});
+
 test('sidepanel startup initializes a fresh panel-open session instead of auto-resuming active scope', () => {
   const source = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
   assert.match(source, /async function loadSettings\(\{ restoreMessages = false \} = \{\}\)/);
@@ -1294,6 +1335,36 @@ test('buildHermesModelOptions maps Browser thinking, effort, and fast controls t
   assert.equal(normalizeFastMode('false'), false);
   assert.equal(normalizeFastMode('off'), false);
   assert.equal(normalizeFastMode('priority'), true);
+});
+
+test('Browser runtime selection preserves every reasoning level and gives Hermes authoritative self-report metadata', () => {
+  assert.equal(typeof common.buildHermesRuntimeSelectionNote, 'function');
+  const levels = [
+    ['minimal', 'minimal', 'Minimal'],
+    ['low', 'low', 'Low'],
+    ['medium', 'medium', 'Medium'],
+    ['high', 'high', 'High'],
+    ['max', 'xhigh', 'Max'],
+  ];
+  for (const [selected, wire, label] of levels) {
+    const modelOptions = buildHermesModelOptions({
+      ...DEFAULT_SETTINGS,
+      thinkingEnabled: true,
+      reasoningEffort: selected,
+      fastMode: false,
+    });
+    assert.equal(modelOptions.reasoning.effort, wire);
+    assert.equal(modelOptions.reasoning_effort, wire);
+    const note = common.buildHermesRuntimeSelectionNote({
+      model: 'gpt-5.6-luna',
+      provider: 'openai-codex',
+      modelOptions,
+    });
+    assert.match(note, /Model: gpt-5\.6-luna/);
+    assert.match(note, /Provider: openai-codex/);
+    assert.match(note, new RegExp(`Reasoning level: ${label}`));
+    assert.match(note, new RegExp(`Runtime effort: ${wire}`));
+  }
 });
 
 test('estimateContextWindow reports estimated token usage and context parts', () => {

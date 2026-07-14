@@ -62,6 +62,8 @@ const els = {
   sessionActionsMenu: $('#sessionActionsMenu'),
   messageList: $('#messageList'),
   loadingState: $('#loadingState'),
+  loadingTitle: $('#loadingTitle'),
+  loadingDetail: $('#loadingDetail'),
   emptyState: $('#emptyState'),
   errorState: $('#errorState'),
   errorTitle: $('#errorTitle'),
@@ -162,6 +164,8 @@ let latestRuntime = {};
 let liveRun = null;
 let imageViewerState = createImageViewerState();
 let imagePanGesture = null;
+let sessionHistoryLoading = true;
+let webSessionLoadRequestId = 0;
 const HERMES_WEB_SESSION_SOURCE = 'hermes_web';
 const openSessionGroups = new Set();
 const closedSessionGroups = new Set();
@@ -288,6 +292,33 @@ function persistSessionVisibility(partial) {
   });
 }
 
+function showRuntimeLoadingState({
+  title = 'Loading Hermes runtime truth',
+  detail = 'Reading connection settings, models, skills, and canonical session history.',
+} = {}) {
+  els.loadingTitle.textContent = title;
+  els.loadingDetail.textContent = detail;
+  els.loadingState.hidden = false;
+  els.emptyState.hidden = true;
+  els.messageList.hidden = true;
+  els.errorState.hidden = true;
+  els.prompt.disabled = true;
+  els.send.disabled = true;
+}
+
+function hideRuntimeLoadingState() {
+  els.loadingState.hidden = true;
+  els.prompt.disabled = false;
+  updateBusyControls();
+}
+
+function showSessionLoadingState(session = {}) {
+  showRuntimeLoadingState({
+    title: `Opening ${sessionTitle(session)}`,
+    detail: 'Loading canonical messages and restoring this session runtime.',
+  });
+}
+
 function renderSessions(query = '') {
   const groups = groupSessionsForMenu(sessions, activeSessionId, query);
   const searching = Boolean(String(query || '').trim());
@@ -296,7 +327,11 @@ function renderSessions(query = '') {
   if (!groups.length) {
     const empty = document.createElement('p');
     empty.className = 'session-list-empty';
-    empty.textContent = sessions.length ? 'No sessions match this search.' : 'Canonical session history is unavailable for this connection.';
+    empty.textContent = sessions.length
+      ? 'No sessions match this search.'
+      : sessionHistoryLoading
+        ? 'Loading canonical session history…'
+        : 'Canonical session history is unavailable for this connection.';
     els.sessionList.append(empty);
     return;
   }
@@ -1398,7 +1433,8 @@ function promptRenameHermesWebSession(session = {}) {
   });
 }
 
-async function beginHermesWebDraft({ focus = true } = {}) {
+async function beginHermesWebDraft({ focus = true, keepLoading = false } = {}) {
+  webSessionLoadRequestId += 1;
   clearLiveRun();
   activeSessionId = '';
   activeMessages = [];
@@ -1408,9 +1444,10 @@ async function beginHermesWebDraft({ focus = true } = {}) {
   els.sessionTitle.textContent = settings.webSessionTitle;
   els.composerSessionLabel.textContent = 'Draft · saved when sent';
   els.errorState.hidden = true;
-  els.loadingState.hidden = true;
   renderAttachments();
   renderMessages([]);
+  if (!keepLoading) hideRuntimeLoadingState();
+  else showRuntimeLoadingState();
   renderSessions(els.sessionSearch.value);
   renderConnectionTruth({ status: 'online' });
   if (focus) els.prompt.focus();
@@ -1537,33 +1574,38 @@ function showError(title, detail) {
   els.errorDetail.textContent = detail;
 }
 
-async function openSession(sessionId) {
+async function openSession(sessionId, { keepLoading = false } = {}) {
   const cleanSessionId = String(sessionId || '').trim();
   if (!cleanSessionId) return;
+  const requestId = ++webSessionLoadRequestId;
   activeSessionId = cleanSessionId;
   const session = sessions.find((row) => row.id === cleanSessionId) || { id: cleanSessionId, title: settings.webSessionTitle };
+  showSessionLoadingState(session);
   latestRuntime = runtimeTelemetryForSession(session);
   settings = { ...settings, webSessionId: cleanSessionId, webSessionTitle: sessionTitle(session) };
-  await chrome.storage.local.set({ hermesBrowserSettings: settings });
   els.sessionTitle.textContent = sessionTitle(session);
   els.composerSessionLabel.textContent = cleanSessionId;
-  els.errorState.hidden = true;
-  els.loadingState.hidden = false;
-  els.emptyState.hidden = true;
-  els.messageList.hidden = true;
   renderSessions(els.sessionSearch.value);
   renderContextWindow();
   renderConnectionTruth({ status: 'online' });
   try {
     const messages = await client.getSessionMessages(cleanSessionId);
+    if (requestId !== webSessionLoadRequestId) return;
+    await chrome.storage.local.set({ hermesBrowserSettings: settings });
+    if (requestId !== webSessionLoadRequestId) return;
     renderMessages(messages);
-    els.loadingState.hidden = true;
+    if (!keepLoading) hideRuntimeLoadingState();
   } catch (error) {
+    if (requestId !== webSessionLoadRequestId) return;
     showError('Could not load this session', error?.message || String(error));
   }
 }
 
 async function loadApp() {
+  webSessionLoadRequestId += 1;
+  sessionHistoryLoading = true;
+  showRuntimeLoadingState();
+  renderSessions();
   const stored = await chrome.storage.local.get(['hermesBrowserSettings']);
   settings = migrateConnectionSettings(stored.hermesBrowserSettings || {});
   applyAppearance();
@@ -1602,15 +1644,22 @@ async function loadApp() {
         const listedSessions = normalizeHermesSessions(rows);
         sessions = visibleHermesWebSessions(await migrateOwnedHermesWebSessionSources(listedSessions));
         if (activeSessionId && !sessions.some((session) => session.id === activeSessionId) && !handoff.sessionId) activeSessionId = '';
+        sessionHistoryLoading = false;
         renderSessions();
       }),
     ]);
-    if (handoff.newChat) await beginHermesWebDraft();
-    await metadataPromise;
-    if (handoff.newChat) return;
-    if (activeSessionId) await openSession(activeSessionId);
-    else {
-      els.loadingState.hidden = true;
+    const initialSessionId = handoff.newChat ? '' : activeSessionId;
+    const activeSessionPromise = initialSessionId
+      ? openSession(initialSessionId, { keepLoading: true })
+      : Promise.resolve();
+    if (handoff.newChat) await beginHermesWebDraft({ keepLoading: true });
+    await Promise.all([metadataPromise, activeSessionPromise]);
+    hideRuntimeLoadingState();
+    if (handoff.newChat) {
+      renderMessages([]);
+      return;
+    }
+    if (!activeSessionId) {
       els.emptyState.hidden = false;
     }
   } catch (error) {

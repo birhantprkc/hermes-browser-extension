@@ -65,24 +65,112 @@ test('Extension Web icon opens a clean Hermes Web draft instead of restoring a B
   assert.doesNotMatch(html, /This full view is attached to the same session as the side panel\./);
 });
 
-test('Hermes Web loading stays visible across themes and does not serialize independent startup work', () => {
+test('Hermes Web loading stays visible until independent startup work is fully ready', () => {
   const css = read('extension/app.css');
   const js = read('extension/app.js');
   const loadApp = js.match(/async function loadApp\(\)\s*\{([\s\S]*?)\n\}\n\nfunction setInspectorTab/)?.[1] || '';
   const beginDraft = js.match(/async function beginHermesWebDraft\([^)]*\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+  const renderSessions = js.match(/function renderSessions\([^)]*\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
 
   assert.match(css, /\.loading-rail span\s*\{[^}]*background:\s*var\(--hermes-ink\);[^}]*animation:\s*web-loading-scan/s);
   assert.match(css, /@keyframes\s+web-loading-scan/);
   assert.match(css, /@media \(prefers-reduced-motion:\s*reduce\)\s*\{[^}]*\.loading-rail span\s*\{[^}]*animation:\s*none;/s);
   assert.match(loadApp, /const metadataPromise = Promise\.all\(\[/);
   assert.ok(
-    loadApp.indexOf("if (handoff.newChat) await beginHermesWebDraft();") < loadApp.indexOf('await metadataPromise;'),
+    loadApp.indexOf('if (handoff.newChat) await beginHermesWebDraft({ keepLoading: true });') < loadApp.indexOf('await Promise.all([metadataPromise, activeSessionPromise]);'),
     'a clean Web handoff should paint its draft before waiting for model, skill, and session metadata',
   );
-  assert.match(beginDraft, /const persistDraft = chrome\.storage\.local\.set/);
   assert.ok(
-    beginDraft.indexOf('els.loadingState.hidden = true;') < beginDraft.indexOf('await persistDraft;'),
-    'draft UI should paint before local settings persistence completes',
+    loadApp.indexOf('const activeSessionPromise = initialSessionId') < loadApp.indexOf('await Promise.all([metadataPromise, activeSessionPromise]);'),
+    'the active transcript request should start before metadata settles instead of adding another serial wait',
+  );
+  assert.match(js, /async function openSession\(sessionId, \{ keepLoading = false \} = \{\}\)/);
+  assert.match(loadApp, /const activeSessionPromise = initialSessionId[\s\S]*openSession\(initialSessionId, \{ keepLoading: true \}\)/);
+  assert.match(loadApp, /await Promise\.all\(\[metadataPromise, activeSessionPromise\]\);/);
+  assert.ok(
+    loadApp.indexOf('await Promise.all([metadataPromise, activeSessionPromise]);') < loadApp.indexOf('hideRuntimeLoadingState();'),
+    'runtime truth loading must remain visible until both metadata and the active transcript settle',
+  );
+  assert.match(beginDraft, /const persistDraft = chrome\.storage\.local\.set/);
+  assert.match(js, /async function beginHermesWebDraft\(\{ focus = true, keepLoading = false \} = \{\}\)/);
+  assert.match(beginDraft, /if \(!keepLoading\) hideRuntimeLoadingState\(\)/);
+  assert.match(js, /let sessionHistoryLoading = true;/);
+  assert.match(renderSessions, /sessionHistoryLoading\s*\?\s*'Loading canonical session history…'/);
+});
+
+test('side panel keeps Browser onboarding, refresh feedback, updates, and message translucency intentional', () => {
+  const html = read('extension/sidepanel.html');
+  const css = read('extension/sidepanel.css');
+  const js = read('extension/sidepanel.js');
+  const refreshModels = js.match(/async function refreshModelsFromMenu\(\)[\s\S]*?\n\}/)?.[0] || '';
+  const refreshSessions = js.match(/async function refreshSessionsFromMenu\(\)[\s\S]*?\n\}/)?.[0] || '';
+  const checkUpdates = js.match(/async function checkForUpdates\([^)]*\)[\s\S]*?\n\}/)?.[0] || '';
+  const renderEmpty = js.match(/function renderEmptyState\(\)[\s\S]*?\n\}/)?.[0] || '';
+
+  assert.match(css, /\.message\.user\s*\{[^}]*color-mix\([^}]*var\(--hermes-paper\)\s+36%,\s*transparent/s);
+  assert.match(css, /\.message\.assistant\s*\{[^}]*color-mix\([^}]*var\(--hermes-paper\)\s+42%,\s*transparent/s);
+  assert.match(css, /backdrop-filter:\s*blur\(/);
+  assert.match(html, /class="release-sidecar"/);
+  assert.match(html, /LOCAL SIDECAR \/ CHROME PANEL/);
+  assert.match(html, /id="reviewUpdateButton"/);
+  assert.match(html, /id="updateDialog"/);
+  assert.match(html, /class="update-dialog-mark"\s+aria-hidden="true"/);
+  assert.match(html, /id="operationToast"/);
+  assert.match(html, /id="sessionRefreshIcon"/);
+  assert.match(html, /id="refreshSessionsLabel"/);
+  assert.match(css, /\.update-dialog/);
+  assert.match(css, /\.update-dialog-mark\s*\{[^}]*hermes-browser-extension-icon-box-white\.png[^}]*background:\s*var\(--hermes-fg\)/s);
+  assert.match(css, /html\[data-hermes-theme="nous"\]\[data-hermes-mode="light"\]\s+\.update-dialog-mark\s*\{[^}]*background:\s*var\(--hermes-ink\)/s);
+  assert.equal(fs.existsSync(path.join(root, 'extension/assets/img/hermes-browser-extension-icon-box-white.png')), true);
+  assert.match(css, /\.operation-toast/);
+  assert.match(css, /\.release-sidecar\s*\{[^}]*background-blend-mode:\s*normal,\s*luminosity,\s*normal/s);
+  assert.doesNotMatch(css, /\.release-sidecar::before/);
+  assert.match(css, /\.operation-toast\s*\{(?=[^}]*left:\s*50%)(?=[^}]*right:\s*auto)(?=[^}]*transform:\s*translateX\(-50%\))[^}]*\}/s);
+  assert.match(css, /@keyframes operationToastIn\s*\{[\s\S]*translate\(-50%,\s*10px\)[\s\S]*translate\(-50%,\s*0\)/);
+  assert.match(css, /#refreshSessionsButton\.is-refreshing\s+\.session-refresh-icon\s*\{[^}]*animation:/s);
+  assert.match(refreshModels, /showOperationToast\(/);
+  assert.match(refreshSessions, /showOperationToast\(/);
+  assert.match(checkUpdates, /renderVersionInfo\(status\)/);
+  assert.doesNotMatch(checkUpdates, /showOperationToast\(/);
+  assert.match(refreshSessions, /sessionsRefreshing\s*=\s*true/);
+  assert.match(js, /function positionOperationToast\(\)[\s\S]*?getBoundingClientRect\(\)/);
+  assert.match(js, /HERMES_BROWSER_INTRO_SEEN_STORAGE_KEY/);
+  assert.match(renderEmpty, /shouldShowBrowserIntro\(/);
+  assert.match(js, /await persistBrowserIntroSeen\(\)/);
+  assert.match(js, /function launchBrowserUpdateWithHermes/);
+  assert.match(js, /function currentHermesBrowserSystemPrompt\(\)/);
+  assert.ok((js.match(/currentHermesBrowserSystemPrompt\(\)/g) || []).length >= 6);
+  assert.match(js, /If the checkout has uncommitted changes, stop and report them/);
+  assert.match(js, /npm run build/);
+  assert.match(js, /els\.composer\.requestSubmit\(\)/);
+});
+
+test('opening an old session paints an in-chat history loader before storage or network work', () => {
+  const sidepanel = read('extension/sidepanel.js');
+  const sidepanelCss = read('extension/sidepanel.css');
+  const web = read('extension/app.js');
+  const webHtml = read('extension/app.html');
+  const sidepanelOpen = sidepanel.match(/async function openHermesSession\(selectedSession\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+  const webOpen = web.match(/async function openSession\(sessionId, \{ keepLoading = false \} = \{\}\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+
+  assert.match(sidepanel, /function renderSessionHistoryLoading/);
+  assert.match(sidepanelCss, /\.session-history-loading/);
+  assert.match(sidepanelOpen, /const requestId = \+\+sessionLoadRequestId/);
+  assert.ok(
+    sidepanelOpen.indexOf('renderSessionHistoryLoading(session)') < sidepanelOpen.indexOf('await loadSessionMessages'),
+    'the side panel should replace the previous transcript before session history starts loading',
+  );
+  assert.match(webHtml, /id="loadingTitle"/);
+  assert.match(webHtml, /id="loadingDetail"/);
+  assert.match(web, /function showSessionLoadingState/);
+  assert.match(webOpen, /const requestId = \+\+webSessionLoadRequestId/);
+  assert.ok(
+    webOpen.indexOf('showSessionLoadingState(session)') < webOpen.indexOf('await chrome.storage.local.set'),
+    'Hermes Web should paint the selected-session loader before persistence can delay the frame',
+  );
+  assert.ok(
+    webOpen.indexOf('showSessionLoadingState(session)') < webOpen.indexOf('await client.getSessionMessages'),
+    'Hermes Web should keep the loader mounted until canonical messages resolve',
   );
 });
 

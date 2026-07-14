@@ -40,7 +40,10 @@
         <div id="sessionMenuList" class="session-menu-list"></div>
         <footer>
           <button id="createSessionButton" class="secondary" type="button">＋ New Hermes Browser Extension Session</button>
-          <button id="refreshSessionsButton" class="secondary" type="button">↻ Refresh Sessions</button>
+          <button id="refreshSessionsButton" class="secondary" type="button">
+            <span id="sessionRefreshIcon" class="session-refresh-icon" aria-hidden="true">↻</span>
+            <span id="refreshSessionsLabel">Refresh Sessions</span>
+          </button>
         </footer>
       </section>
 
@@ -213,15 +216,30 @@
           <button id="closeSettingsButton" class="settings-button" type="button">CLOSE</button>
         </header>
 
-        <section class="settings-section release-settings" aria-labelledby="releaseTitle">
-          <div class="release-row">
-            <div>
-              <h3 id="releaseTitle">Extension</h3>
-              <p><span id="versionLabel">version loading…</span> · public alpha / load unpacked</p>
+        <section class="settings-section release-settings browser-release-card" aria-labelledby="releaseTitle">
+          <div class="release-sidecar" aria-label="Hermes Browser local sidecar">
+            <div class="release-sidecar-copy">
+              <p class="eyebrow">LOCAL SIDECAR / CHROME PANEL</p>
+              <svg class="release-sidecar-wordmark" viewBox="0 0 2918.77 1206.98" role="img" aria-label="Hermes Browser">
+                <use href="assets/img/hermes-browser-logo-left.svg#Layer_1"></use>
+              </svg>
+              <p>Ask about any page. Hermes sees the active tab, selected text, page context, and open tabs.</p>
             </div>
-            <button id="checkUpdatesButton" class="secondary" type="button">Check updates</button>
+            <img class="release-sidecar-badge" src="assets/img/hermes-badge.webp" alt="Hermes Agent badge" />
           </div>
-          <p id="updateStatus" class="hint">Updates are checked against the public GitHub repo.</p>
+          <div class="release-control">
+            <div class="release-row">
+              <div>
+                <h3 id="releaseTitle">Browser updates</h3>
+                <p><span id="versionLabel">version loading…</span> · public alpha / load unpacked</p>
+              </div>
+              <div class="release-actions">
+                <button id="checkUpdatesButton" class="secondary" type="button">Check</button>
+                <button id="reviewUpdateButton" type="button">Update</button>
+              </div>
+            </div>
+            <p id="updateStatus" class="hint">Updates are checked against the public GitHub repo.</p>
+          </div>
         </section>
         <section class="settings-section profile-settings" aria-labelledby="profileTitle">
           <div class="settings-section-head">
@@ -516,6 +534,31 @@
           <button id="saveSettingsButton" type="submit">Save settings</button>
         </footer>
       </form>
+    </section>
+
+    <section id="updateDialog" class="update-dialog" role="dialog" aria-modal="true" aria-labelledby="updateDialogTitle" aria-hidden="true" hidden>
+      <div class="update-dialog-card">
+        <button id="closeUpdateDialogButton" class="update-dialog-close" type="button" aria-label="Close update review">×</button>
+        <span class="update-dialog-mark" aria-hidden="true"></span>
+        <p class="eyebrow">HERMES BROWSER / UPDATE CHANNEL</p>
+        <h2 id="updateDialogTitle">Checking Browser main…</h2>
+        <p id="updateDialogSummary" class="update-dialog-summary">Comparing this loaded build with the public GitHub repository.</p>
+        <div id="updateChangeGroups" class="update-change-groups" aria-live="polite"></div>
+        <div class="update-dialog-actions">
+          <button id="updateNowButton" type="button" hidden>Update now</button>
+          <button id="maybeLaterButton" class="secondary" type="button">Maybe later</button>
+        </div>
+        <p id="updateInstallNote" class="update-install-note">Load-unpacked installs update through a guarded Hermes agent turn, then reload the built dist/ folder.</p>
+      </div>
+    </section>
+
+    <section id="operationToast" class="operation-toast" role="status" aria-live="polite" aria-atomic="true" hidden>
+      <span class="operation-toast-signal" aria-hidden="true"></span>
+      <div>
+        <strong id="operationToastTitle">Hermes Browser</strong>
+        <span id="operationToastDetail"></span>
+      </div>
+      <button id="closeOperationToastButton" type="button" aria-label="Dismiss notification">×</button>
     </section>
 
     <template id="messageTemplate">

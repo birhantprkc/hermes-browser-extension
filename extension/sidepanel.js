@@ -7,6 +7,7 @@ import {
   autoSessionTitleFromText,
   buildAudioTranscriptionBody,
   buildHermesModelOptions,
+  buildHermesRuntimeSelectionNote,
   buildHermesPrompt,
   browserContextPayloadHash,
   busyComposerSubmitAction,
@@ -73,6 +74,7 @@ import {
   shouldAutoOpenSessionGroup,
   shouldAutoFlushQueuedTurn,
   shouldCreateFreshSessionOnOpen,
+  shouldShowBrowserIntro,
   resolveAcknowledgedSessionModelBinding,
   resolveAcknowledgedSessionModelOptions,
   resolveBrowserEffectiveModel,
@@ -81,6 +83,7 @@ import {
   skillSuggestionsForInput,
   updateBrowserModelScope,
   updateBrowserModelOptionScope,
+  updateReviewState,
 } from './lib/common.mjs';
 import {
   APPEARANCE_THEMES,
@@ -226,6 +229,8 @@ const els = {
   sessionMenuList: $('#sessionMenuList'),
   createSessionButton: $('#createSessionButton'),
   refreshSessionsButton: $('#refreshSessionsButton'),
+  sessionRefreshIcon: $('#sessionRefreshIcon'),
+  refreshSessionsLabel: $('#refreshSessionsLabel'),
   messages: $('#messages'),
   composer: $('#composer'),
   input: $('#promptInput'),
@@ -257,7 +262,20 @@ const els = {
   testConnectionButton: $('#testConnectionButton'),
   versionLabel: $('#versionLabel'),
   checkUpdatesButton: $('#checkUpdatesButton'),
+  reviewUpdateButton: $('#reviewUpdateButton'),
   updateStatus: $('#updateStatus'),
+  updateDialog: $('#updateDialog'),
+  updateDialogTitle: $('#updateDialogTitle'),
+  updateDialogSummary: $('#updateDialogSummary'),
+  updateChangeGroups: $('#updateChangeGroups'),
+  updateNowButton: $('#updateNowButton'),
+  maybeLaterButton: $('#maybeLaterButton'),
+  closeUpdateDialogButton: $('#closeUpdateDialogButton'),
+  updateInstallNote: $('#updateInstallNote'),
+  operationToast: $('#operationToast'),
+  operationToastTitle: $('#operationToastTitle'),
+  operationToastDetail: $('#operationToastDetail'),
+  closeOperationToastButton: $('#closeOperationToastButton'),
   activeTitle: $('#activeTitle'),
   activeUrl: $('#activeUrl'),
   statusDot: $('#statusDot'),
@@ -380,7 +398,13 @@ let dictating = false;
 let dictationBaseText = '';
 let dictationFinalText = '';
 let sessionRoutesAvailable = null;
+let sessionLoadRequestId = 0;
 let bottomDockResizeObserver = null;
+const HERMES_BROWSER_INTRO_SEEN_STORAGE_KEY = 'hermesBrowserIntroSeen';
+let browserIntroSeen = false;
+let operationToastTimer = null;
+let latestUpdateReview = null;
+let sessionsRefreshing = false;
 
 let activeSessionRuntime = {
   sessionId: '',
@@ -552,6 +576,35 @@ function closeSettingsDialog() {
   els.settingsDialog.hidden = true;
   els.settingsDialog.setAttribute('aria-hidden', 'true');
   els.settingsButton.focus();
+}
+
+function hideOperationToast() {
+  if (operationToastTimer) clearTimeout(operationToastTimer);
+  operationToastTimer = null;
+  if (els.operationToast) els.operationToast.hidden = true;
+}
+
+function positionOperationToast() {
+  if (!els.operationToast || els.operationToast.hidden) return;
+  const composerTop = els.composer?.getBoundingClientRect().top;
+  if (!Number.isFinite(composerTop) || composerTop <= 0) {
+    els.operationToast.style.top = 'auto';
+    els.operationToast.style.bottom = '12px';
+    return;
+  }
+  els.operationToast.style.bottom = 'auto';
+  els.operationToast.style.top = `${Math.max(58, Math.round(composerTop - els.operationToast.offsetHeight - 10))}px`;
+}
+
+function showOperationToast({ kind = 'ok', title = 'Hermes Browser', detail = '', duration = 5200 } = {}) {
+  if (!els.operationToast) return;
+  hideOperationToast();
+  els.operationToast.className = `operation-toast ${kind}`.trim();
+  els.operationToastTitle.textContent = title;
+  els.operationToastDetail.textContent = detail;
+  els.operationToast.hidden = false;
+  positionOperationToast();
+  if (duration > 0) operationToastTimer = setTimeout(hideOperationToast, duration);
 }
 
 function renderVersionInfo(statusText = '') {
@@ -1387,40 +1440,138 @@ async function fetchLatestUpdateInfo() {
 async function commitsBehindMainForBuild(currentCommit = '', latestCommit = '') {
   const currentSha = normalizeGitCommit(currentCommit);
   const latestSha = normalizeGitCommit(latestCommit);
-  if (!currentSha) return null;
-  if (latestSha && currentSha === latestSha) return 0;
+  if (!currentSha) return { commitsBehind: null, commits: [] };
+  if (latestSha && currentSha === latestSha) return { commitsBehind: 0, commits: [] };
   const head = latestSha || 'main';
   const response = await fetch(`${UPDATE_COMPARE_URL}/${encodeURIComponent(currentSha)}...${encodeURIComponent(head)}?t=${Date.now()}`, { cache: 'no-store' });
-  if (!response.ok) return null;
+  if (!response.ok) return { commitsBehind: null, commits: [] };
   const payload = await response.json().catch(() => ({}));
-  return Math.max(0, Number.parseInt(payload.ahead_by, 10) || 0);
+  return {
+    commitsBehind: Math.max(0, Number.parseInt(payload.ahead_by, 10) || 0),
+    commits: (Array.isArray(payload.commits) ? payload.commits : [])
+      .slice(-12)
+      .reverse()
+      .map((commit) => ({ sha: commit?.sha || '', message: commit?.commit?.message || '' })),
+  };
 }
 
-async function checkForUpdates() {
+function closeUpdateDialog({ restoreFocus = true } = {}) {
+  if (!els.updateDialog) return;
+  els.updateDialog.hidden = true;
+  els.updateDialog.setAttribute('aria-hidden', 'true');
+  if (restoreFocus) els.reviewUpdateButton?.focus();
+}
+
+function renderUpdateDialog(review = { loading: true }) {
+  if (!els.updateDialog) return;
+  els.updateDialog.hidden = false;
+  els.updateDialog.setAttribute('aria-hidden', 'false');
+  els.updateDialogTitle.textContent = review.loading ? 'Checking Browser main…' : (review.title || 'Browser update review');
+  els.updateDialogSummary.textContent = review.loading
+    ? 'Comparing this loaded build with the public GitHub repository.'
+    : (review.summary || 'Update details are unavailable.');
+  els.updateChangeGroups.innerHTML = '';
+  if (review.error || review.loading || !review.groups?.length) {
+    const empty = document.createElement('p');
+    empty.className = 'update-change-empty';
+    empty.textContent = review.error || (review.loading ? 'Reading version and commit metadata…' : 'No newer public commits were found for this build.');
+    els.updateChangeGroups.appendChild(empty);
+  } else {
+    for (const group of review.groups) {
+      const section = document.createElement('section');
+      section.className = 'update-change-group';
+      const title = document.createElement('h3');
+      title.textContent = group.label;
+      const list = document.createElement('ul');
+      for (const item of group.items) {
+        const row = document.createElement('li');
+        row.textContent = item.title;
+        if (item.sha) {
+          const sha = document.createElement('code');
+          sha.textContent = ` ${item.sha}`;
+          row.appendChild(sha);
+        }
+        list.appendChild(row);
+      }
+      section.append(title, list);
+      els.updateChangeGroups.appendChild(section);
+    }
+  }
+  els.updateNowButton.hidden = !review.available;
+  els.updateInstallNote.textContent = review.available
+    ? 'Update now starts a guarded Hermes agent turn. It will stop on local changes, build dist/, and reload through computer-use when available.'
+    : 'This check compares the loaded build metadata with the public Hermes Browser repository.';
+  (review.available ? els.updateNowButton : els.maybeLaterButton)?.focus({ preventScroll: true });
+}
+
+function launchBrowserUpdateWithHermes() {
+  const review = latestUpdateReview || {};
+  const updatePrompt = [
+    'Update my Hermes Browser Extension from the official repository: https://github.com/abundantbeing/hermes-browser-extension',
+    `The Browser update review reports ${review.commitCount || 'new'} public commit${review.commitCount === 1 ? '' : 's'} available.`,
+    'First locate the existing Hermes Browser Extension checkout that this user intends to update.',
+    'If the checkout has uncommitted changes, stop and report them. Do not discard, overwrite, commit, or push any local work.',
+    'If it is clean, fetch and fast-forward the current branch from the official remote, install dependencies only if required, and run npm run build.',
+    'After a successful build, use computer-use to reload the unpacked dist/ extension from chrome://extensions when available. Otherwise tell me exactly how to reload it manually.',
+    'Verify the extension build before reporting success.',
+  ].join('\n\n');
+  closeUpdateDialog({ restoreFocus: false });
+  closeSettingsDialog();
+  els.input.value = updatePrompt;
+  els.input.dispatchEvent(new Event('input', { bubbles: true }));
+  if (!isConnected() || sending) {
+    showOperationToast({ kind: 'warn', title: 'Update prompt ready', detail: sending ? 'Send it when the current Hermes run finishes.' : 'Connect to Hermes, then send the prepared update request.' });
+    els.input.focus();
+    return;
+  }
+  showOperationToast({ title: 'Handing update to Hermes', detail: 'Hermes will stop before changing a dirty checkout.' });
+  requestAnimationFrame(() => els.composer.requestSubmit());
+}
+
+async function checkForUpdates({ openReview = false } = {}) {
   if (!els.checkUpdatesButton) return;
   els.checkUpdatesButton.disabled = true;
+  if (els.reviewUpdateButton) els.reviewUpdateButton.disabled = true;
   els.checkUpdatesButton.textContent = 'Checking...';
   renderVersionInfo('Checking GitHub main and this loaded build commit...');
+  if (openReview) renderUpdateDialog({ loading: true });
   try {
     const [buildInfo, latestInfo] = await Promise.all([
       loadExtensionBuildInfo(),
       fetchLatestUpdateInfo(),
     ]);
     const currentCommit = normalizeGitCommit(buildInfo?.commit);
-    const commitsBehind = await commitsBehindMainForBuild(currentCommit, latestInfo.latestCommit);
-    renderVersionInfo(formatUpdateStatus({
+    const comparison = await commitsBehindMainForBuild(currentCommit, latestInfo.latestCommit);
+    const status = formatUpdateStatus({
       latestVersion: latestInfo.latestVersion,
       currentVersion: CURRENT_EXTENSION_VERSION,
       currentCommit,
       latestCommit: latestInfo.latestCommit,
-      commitsBehind,
+      commitsBehind: comparison.commitsBehind,
       buildDirty: Boolean(buildInfo?.dirty),
-    }));
+    });
+    latestUpdateReview = {
+      ...updateReviewState({
+        latestVersion: latestInfo.latestVersion,
+        currentVersion: CURRENT_EXTENSION_VERSION,
+        commitsBehind: comparison.commitsBehind,
+        commits: comparison.commits,
+      }),
+      currentCommit,
+      latestCommit: latestInfo.latestCommit,
+    };
+    renderVersionInfo(status);
+    if (openReview) renderUpdateDialog(latestUpdateReview);
+    return latestUpdateReview;
   } catch (error) {
-    renderVersionInfo(`${error?.message || String(error)} Open ${REPO_URL} for manual update instructions.`);
+    const detail = `${error?.message || String(error)} Open ${REPO_URL} for manual update instructions.`;
+    renderVersionInfo(detail);
+    if (openReview) renderUpdateDialog({ title: 'Update check unavailable', summary: 'Hermes Browser could not read public update metadata.', error: detail });
+    return null;
   } finally {
     els.checkUpdatesButton.disabled = false;
-    els.checkUpdatesButton.textContent = 'Check updates';
+    if (els.reviewUpdateButton) els.reviewUpdateButton.disabled = false;
+    els.checkUpdatesButton.textContent = 'Check';
   }
 }
 
@@ -3297,7 +3448,7 @@ async function loadModels({ quiet = false, payload = null, refresh = false } = {
   const previousSelectedModel = settings.model;
   const trackRefresh = Boolean(refresh && !payload);
   if (trackRefresh) {
-    if (modelsRefreshing) return;
+    if (modelsRefreshing) return { ok: false, skipped: true, error: 'Model refresh is already running.' };
     modelsRefreshing = true;
     renderModelRefreshState();
     if (!quiet) setStatus('ok', 'Refreshing models', 'Syncing Hermes model catalog… this can take 20–30 seconds.');
@@ -3314,7 +3465,7 @@ async function loadModels({ quiet = false, payload = null, refresh = false } = {
       if (remoteWsConnection?.client?.readyState !== 1) {
         availableModels = normalizeHermesModels([], settings.model);
         renderModelOptions(availableModels);
-        return;
+        return { ok: false, count: availableModels.length, error: 'Remote Hermes is not connected.' };
       }
       data = await remoteWsConnection.client.request(WS_METHODS.modelOptions);
       registrySource = 'dashboard';
@@ -3439,6 +3590,7 @@ async function loadModels({ quiet = false, payload = null, refresh = false } = {
               : 'from local Hermes';
       setStatus('ok', 'Hermes models synced', `${availableModels.length} model${availableModels.length === 1 ? '' : 's'} available ${sourceLabel}`);
     }
+    return { ok: true, count: availableModels.length, source: registrySource };
   } catch (error) {
     availableModels = normalizeHermesModels([], settings.model);
     renderModelOptions(availableModels);
@@ -3446,6 +3598,7 @@ async function loadModels({ quiet = false, payload = null, refresh = false } = {
     const diagnostic = classifyGatewayError(error);
     if (diagnostic.probeStatus === 'degraded') markGatewayDegraded(error);
     if (!quiet) setStatus('warn', diagnostic.kind === 'unknown' ? 'Model sync failed' : diagnostic.title, diagnostic.kind === 'unknown' ? (error?.message || String(error)) : diagnostic.detail);
+    return { ok: false, count: availableModels.length, error: diagnostic.kind === 'unknown' ? (error?.message || String(error)) : diagnostic.detail };
   } finally {
     if (trackRefresh) {
       modelsRefreshing = false;
@@ -3455,7 +3608,10 @@ async function loadModels({ quiet = false, payload = null, refresh = false } = {
 }
 
 async function refreshModelsFromMenu() {
-  await loadModels({ refresh: true });
+  const outcome = await loadModels({ refresh: true });
+  showOperationToast(outcome?.ok
+    ? { title: 'Models refreshed', detail: `${outcome.count} model${outcome.count === 1 ? '' : 's'} ready in Hermes Browser.` }
+    : { kind: 'warn', title: 'Model refresh incomplete', detail: outcome?.error || 'Hermes kept the current model catalog.' });
 }
 
 async function loadSkills({ quiet = false } = {}) {
@@ -3873,10 +4029,18 @@ async function switchAgentGateway(agent) {
 
 function renderEmptyState() {
   if (messages.length) return;
+  els.messages.innerHTML = '';
+  if (!shouldShowBrowserIntro({ seen: browserIntroSeen, connected: isConnected(), messageCount: messages.length })) return;
   const setupCopy = settings.apiKey
     ? 'Ask Hermes about what you are viewing. Active tab, selected text, page text, and open tabs are attached as untrusted context.'
     : 'Click Connect to Hermes, approve locally, then start chatting with page context. Manual API key setup is still available in settings.';
   els.messages.innerHTML = `<div class="empty-state"><strong>THE PAGE IS THE PROMPT</strong><span>${setupCopy}</span></div>`;
+}
+
+async function persistBrowserIntroSeen() {
+  if (browserIntroSeen) return;
+  browserIntroSeen = true;
+  await chrome.storage.local.set({ [HERMES_BROWSER_INTRO_SEEN_STORAGE_KEY]: true });
 }
 
 function sessionDisplayName(session = {}) {
@@ -4050,7 +4214,7 @@ async function loadSessions({ quiet = false } = {}) {
       availableSessions = [];
       updateSessionLabel();
       renderSessionMenu();
-      return;
+      return { ok: false, count: 0, error: 'Remote Hermes is not connected.' };
     }
     try {
       const result = await remoteWsConnection.client.request(WS_METHODS.sessionList, { limit: 200 });
@@ -4059,18 +4223,19 @@ async function loadSessions({ quiet = false } = {}) {
       updateSessionLabel();
       renderSessionMenu();
       if (!quiet) setStatus('ok', 'Hermes sessions synced', `${availableSessions.length} sessions available`);
+      return { ok: true, count: availableSessions.length };
     } catch (error) {
       updateSessionLabel();
       renderSessionMenu();
       if (!quiet) setStatus('warn', 'Session sync failed', error?.message || String(error));
+      return { ok: false, count: availableSessions.length, error: error?.message || String(error) };
     }
-    return;
   }
   if (!settings.apiKey) {
     availableSessions = [];
     updateSessionLabel();
     renderSessionMenu();
-    return;
+    return { ok: false, count: 0, error: 'Connect to Hermes before refreshing sessions.' };
   }
   try {
     const payload = await loadAllHermesSessions();
@@ -4079,11 +4244,37 @@ async function loadSessions({ quiet = false } = {}) {
     updateSessionLabel();
     renderSessionMenu();
     if (!quiet) setStatus('ok', 'Hermes sessions synced', `${availableSessions.length} sessions available`);
+    return { ok: true, count: availableSessions.length };
   } catch (error) {
     updateSessionLabel();
     renderSessionMenu();
     if (!quiet) setStatus('warn', 'Session sync failed', error?.message || String(error));
+    return { ok: false, count: availableSessions.length, error: error?.message || String(error) };
   }
+}
+
+async function refreshSessionsFromMenu() {
+  if (sessionsRefreshing) return;
+  sessionsRefreshing = true;
+  els.refreshSessionsButton.disabled = true;
+  els.refreshSessionsButton.classList.add('is-refreshing');
+  els.refreshSessionsButton.setAttribute('aria-busy', 'true');
+  if (els.refreshSessionsLabel) els.refreshSessionsLabel.textContent = 'Refreshing Sessions…';
+  let outcome;
+  try {
+    outcome = await loadSessions();
+  } catch (error) {
+    outcome = { ok: false, error: error?.message || String(error) };
+  } finally {
+    sessionsRefreshing = false;
+    els.refreshSessionsButton.disabled = false;
+    els.refreshSessionsButton.classList.remove('is-refreshing');
+    els.refreshSessionsButton.removeAttribute('aria-busy');
+    if (els.refreshSessionsLabel) els.refreshSessionsLabel.textContent = 'Refresh Sessions';
+  }
+  showOperationToast(outcome?.ok
+    ? { title: 'Sessions refreshed', detail: `${outcome.count} canonical session${outcome.count === 1 ? '' : 's'} ready.` }
+    : { kind: 'warn', title: 'Session refresh incomplete', detail: outcome?.error || 'Hermes kept the current session list.' });
 }
 
 async function renameHermesSessionTitle(sessionId, title, { quiet = false } = {}) {
@@ -4270,7 +4461,7 @@ async function createHermesBrowserSession({ title = makeBrowserSessionTitle(), f
       model: requestModel,
       provider: requestProvider || undefined,
       model_options: buildHermesModelOptions(preferredOptions),
-      system_prompt: HERMES_BROWSER_SYSTEM_PROMPT,
+      system_prompt: currentHermesBrowserSystemPrompt(),
     }),
   });
   const payload = await readJsonResponse(response);
@@ -4306,9 +4497,37 @@ async function createHermesBrowserSession({ title = makeBrowserSessionTitle(), f
   return session;
 }
 
-async function openHermesSession(session) {
+function renderSessionHistoryLoading(session = {}) {
+  const loading = document.createElement('section');
+  loading.className = 'session-history-loading';
+  loading.setAttribute('role', 'status');
+  loading.setAttribute('aria-live', 'polite');
+
+  const rail = document.createElement('span');
+  rail.className = 'session-history-loading-rail';
+  rail.setAttribute('aria-hidden', 'true');
+
+  const label = document.createElement('span');
+  label.className = 'session-history-loading-label';
+  label.textContent = 'OPENING SESSION';
+
+  const title = document.createElement('strong');
+  title.textContent = sessionDisplayName(session);
+
+  const detail = document.createElement('span');
+  detail.className = 'session-history-loading-detail';
+  detail.textContent = 'Loading canonical Hermes history…';
+
+  loading.append(rail, label, title, detail);
+  els.messages.replaceChildren(loading);
+}
+
+async function openHermesSession(selectedSession) {
   els.sessionMenu.hidden = true;
   els.sessionMenuButton.setAttribute('aria-expanded', 'false');
+  const requestId = ++sessionLoadRequestId;
+  let session = selectedSession;
+  renderSessionHistoryLoading(session);
   const requestedSessionId = session.id;
   let liveSessionId = session.id;
   if (isRemoteWsMode()) {
@@ -4333,6 +4552,8 @@ async function openHermesSession(session) {
         },
       };
     } catch (error) {
+      if (requestId !== sessionLoadRequestId) return;
+      renderMessagesFromStorage();
       setStatus('error', 'Could not open session', error?.message || String(error));
       return;
     }
@@ -4359,41 +4580,52 @@ async function openHermesSession(session) {
   await saveSessionBindingForActiveScope(session);
   updateSessionLabel();
   renderSessionMenu();
-  await loadSessionMessages(liveSessionId);
-  setStatus('ok', 'Session opened', `${session.sourceLabel || session.source || 'Hermes'} · ${session.id}`);
+  const loaded = await loadSessionMessages(liveSessionId, { requestId });
+  if (requestId !== sessionLoadRequestId) return;
+  setStatus(loaded ? 'ok' : 'warn', loaded ? 'Session opened' : 'Session opened without history', `${session.sourceLabel || session.source || 'Hermes'} · ${session.id}`);
 }
 
-async function loadSessionMessages(sessionId = settings.sessionId) {
+async function loadSessionMessages(sessionId = settings.sessionId, { requestId = null } = {}) {
+  const isCurrentRequest = () => requestId == null || requestId === sessionLoadRequestId;
   if (isRemoteWsMode()) {
-    if (remoteWsConnection?.client?.readyState !== 1) return;
+    if (remoteWsConnection?.client?.readyState !== 1) return false;
     try {
       const result = await remoteWsConnection.client.request(WS_METHODS.sessionHistory, { session_id: sessionId });
+      if (!isCurrentRequest()) return false;
       const rows = Array.isArray(result?.messages) ? result.messages : [];
       messages = rows
         .filter((message) => ['user', 'assistant', 'system'].includes(message.role))
         .map((message) => ({ role: message.role, content: coerceWsMessageContent(message.content), ts: Number(message.timestamp || message.ts || Date.now()) }))
         .filter((message) => message.content);
       await saveMessagesForActiveScope();
+      if (!isCurrentRequest()) return false;
       renderMessagesFromStorage();
+      return true;
     } catch (error) {
+      if (!isCurrentRequest()) return false;
       addMessage('system', `Could not load session messages: ${error?.message || String(error)}`);
+      return false;
     }
-    return;
   }
-  if (!settings.apiKey) return;
+  if (!settings.apiKey) return false;
   try {
     const response = await apiFetch(`/api/sessions/${encodeSessionId(sessionId)}/messages`, { method: 'GET' });
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || payload?.error || `Messages failed (${response.status})`);
+    if (!isCurrentRequest()) return false;
     if (payload.session) applySessionRuntimeSnapshot({ session: payload.session, sessionId: payload.session.id || sessionId, source: 'Hermes session' });
     const rows = Array.isArray(payload.data) ? payload.data : [];
     messages = rows
       .filter((message) => ['user', 'assistant', 'system'].includes(message.role) && message.content)
       .map((message) => ({ role: message.role, content: String(message.content), ts: Number(message.timestamp || Date.now()) }));
     await saveMessagesForActiveScope();
+    if (!isCurrentRequest()) return false;
     renderMessagesFromStorage();
+    return true;
   } catch (error) {
+    if (!isCurrentRequest()) return false;
     addMessage('system', `Could not load session messages: ${error?.message || String(error)}`);
+    return false;
   }
 }
 
@@ -4987,7 +5219,8 @@ async function trimAndSaveMessages() {
 async function loadSettings({ restoreMessages = false } = {}) {
   loadContextScopeForInstance();
   const messageKey = activeMessagesStorageKey(previousConversationScope);
-  const stored = await chrome.storage.local.get(['hermesBrowserSettings', messageKey]);
+  const stored = await chrome.storage.local.get(['hermesBrowserSettings', messageKey, HERMES_BROWSER_INTRO_SEEN_STORAGE_KEY]);
+  browserIntroSeen = stored[HERMES_BROWSER_INTRO_SEEN_STORAGE_KEY] === true;
   const migrateConnectionSchema = stored.hermesBrowserSettings?.connectionSchemaVersion !== DEFAULT_SETTINGS.connectionSchemaVersion;
   const storedSettings = migrateConnectionSettings(stored.hermesBrowserSettings || {});
   const migrateDesktopOptionDefaults = !storedSettings.modelOptionsVersion && storedSettings.reasoningEffort === 'medium';
@@ -5838,7 +6071,7 @@ async function ensureHermesSession() {
       source: settings.sessionSource || DEFAULT_SETTINGS.sessionSource,
       model: currentModelRequestId(),
       provider: currentModelProviderSlug() || undefined,
-      system_prompt: HERMES_BROWSER_SYSTEM_PROMPT,
+      system_prompt: currentHermesBrowserSystemPrompt(),
     }),
   });
   if (createResponse.status === 404 || createResponse.status === 405) {
@@ -5954,6 +6187,15 @@ async function readSseResponse(response, onDelta, onTool, { signal, onRun, onSte
 
 function currentModelOptionsPayload() {
   return buildHermesModelOptions(settings);
+}
+
+function currentHermesBrowserSystemPrompt() {
+  const runtimeSelection = buildHermesRuntimeSelectionNote({
+    model: currentModelRequestId(),
+    provider: currentModelProviderSlug() || 'Hermes runtime',
+    modelOptions: currentModelOptionsPayload(),
+  });
+  return `${HERMES_BROWSER_SYSTEM_PROMPT}\n\n${runtimeSelection}`;
 }
 
 function currentSelectedModel() {
@@ -6215,7 +6457,7 @@ async function streamSessionChat(prompt, onDelta, onTool, { signal, attachments:
               defaultModel: DEFAULT_SETTINGS.model,
             }),
             message: outboundContent(prompt, turnAttachments),
-            system_message: HERMES_BROWSER_SYSTEM_PROMPT,
+            system_message: currentHermesBrowserSystemPrompt(),
           }),
     });
   } catch (error) {
@@ -6254,7 +6496,7 @@ async function streamChatCompletions(prompt, onDelta, onTool, { signal, attachme
         model_options: currentModelOptionsPayload(),
         stream: true,
         messages: [
-          { role: 'system', content: HERMES_BROWSER_SYSTEM_PROMPT },
+          { role: 'system', content: currentHermesBrowserSystemPrompt() },
           { role: 'user', content: outboundContent(prompt, turnAttachments) },
         ],
       }),
@@ -6404,6 +6646,7 @@ async function connectTicketTransport({ cloud = false } = {}) {
       ? `Connected to the active signed-in Hermes Cloud agent (${target}).`
       : `Connected to ${target}.`;
     updateConnectionPrompt();
+    renderEmptyState();
   } catch (error) {
     const diagnostic = classifyGatewayError(error);
     if (connectionController.transition(generation, CONNECTION_STATES.ERROR, { errorKind: diagnostic.kind })) {
@@ -6493,6 +6736,7 @@ async function connectApiWithPairing() {
     els.connectStatus.textContent = 'Connected to Hermes. You can start chatting with page context.';
     markGatewayReachable(normalizeGatewayUrl(settings.gatewayUrl));
     setStatus('ok', 'Hermes Browser Extension connected', normalizeGatewayUrl(settings.gatewayUrl));
+    renderEmptyState();
   } catch (error) {
     const diagnostic = classifyGatewayError(error);
     if (!connectionController.transition(generation, CONNECTION_STATES.ERROR, { errorKind: diagnostic.kind })) return;
@@ -6523,7 +6767,7 @@ async function fallbackSessionChat(prompt, turnAttachments = attachments, { onRu
             defaultModel: DEFAULT_SETTINGS.model,
           }),
           message: outboundContent(prompt, turnAttachments),
-          system_message: HERMES_BROWSER_SYSTEM_PROMPT,
+          system_message: currentHermesBrowserSystemPrompt(),
         }),
   });
   const payload = await readJsonResponse(response);
@@ -6545,7 +6789,7 @@ async function fallbackChatCompletions(prompt, turnAttachments = attachments) {
       model_options: currentModelOptionsPayload(),
       stream: false,
       messages: [
-        { role: 'system', content: HERMES_BROWSER_SYSTEM_PROMPT },
+        { role: 'system', content: currentHermesBrowserSystemPrompt() },
         { role: 'user', content: outboundContent(prompt, turnAttachments) },
       ],
     }),
@@ -6647,6 +6891,7 @@ async function askHermes(userText, turnAttachments = [...attachments]) {
 
     const receipt = buildContextReceipt({ context, attachments: preparedAttachments, settings, contextHash });
     const { node: userNode } = addMessage('user', displayUserText);
+    await persistBrowserIntroSeen();
     appendContextReceipt(userNode, receipt);
     const { node } = addMessage('assistant', THINKING_PLACEHOLDER, { persist: false });
     const streamView = createStreamingMessageUpdater(node);
@@ -6946,6 +7191,7 @@ function eventPathContains(event, node) {
 function bindEvents() {
   portalDockFloatingPanels();
   observeDockFloatingAnchor();
+  window.addEventListener('resize', positionOperationToast);
   els.settingsButton.addEventListener('click', openSettingsDialog);
   els.openFullViewButton?.addEventListener('click', () => {
     openFullView().catch((error) => setStatus('warn', 'Could not open full view', error?.message || String(error)));
@@ -6992,7 +7238,7 @@ function bindEvents() {
       setStatus('error', 'Could not create session', error?.message || String(error));
     }
   });
-  els.refreshSessionsButton.addEventListener('click', () => loadSessions());
+  els.refreshSessionsButton.addEventListener('click', refreshSessionsFromMenu);
   els.sessionSearchInput.addEventListener('input', () => renderSessionMenu(els.sessionSearchInput.value));
   els.closeSettingsButton.addEventListener('click', closeSettingsDialog);
   els.messages.addEventListener('click', (event) => {
@@ -7013,10 +7259,17 @@ function bindEvents() {
   els.settingsDialog.addEventListener('click', (event) => {
     if (event.target === els.settingsDialog) closeSettingsDialog();
   });
+  els.updateDialog?.addEventListener('click', (event) => {
+    if (event.target === els.updateDialog) closeUpdateDialog();
+  });
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       if (document.querySelector('.generated-image-lightbox')) {
         closeGeneratedImageLightbox();
+        return;
+      }
+      if (!els.updateDialog?.hidden) {
+        closeUpdateDialog();
         return;
       }
       if (!els.settingsDialog.hidden) closeSettingsDialog();
@@ -7078,7 +7331,12 @@ function bindEvents() {
     if (action === 'steer') steerQueuedTurn();
   });
   els.voiceButton?.addEventListener('click', toggleVoiceDictation);
-  els.checkUpdatesButton?.addEventListener('click', checkForUpdates);
+  els.checkUpdatesButton?.addEventListener('click', () => checkForUpdates());
+  els.reviewUpdateButton?.addEventListener('click', () => checkForUpdates({ openReview: true }));
+  els.closeUpdateDialogButton?.addEventListener('click', () => closeUpdateDialog());
+  els.maybeLaterButton?.addEventListener('click', () => closeUpdateDialog());
+  els.updateNowButton?.addEventListener('click', launchBrowserUpdateWithHermes);
+  els.closeOperationToastButton?.addEventListener('click', hideOperationToast);
   els.refreshModelsButton.addEventListener('click', refreshModelsFromMenu);
   renderModelRefreshState();
   els.refreshProfilesButton?.addEventListener('click', () => loadProfiles());
