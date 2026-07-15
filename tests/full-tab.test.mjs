@@ -304,6 +304,28 @@ test('full-tab model locks distinguish accepted, legacy, mismatch, and hard fail
   });
 });
 
+test('Hermes Web model discovery mirrors the side-panel fallback chain', () => {
+  const js = read('extension/app.js');
+  const loadModels = js.match(/async function loadModels\(\{ refresh = false \} = \{\}\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+  const renderModelPicker = js.match(/function renderModelPicker\(query = ''\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+
+  const registry = loadModels.indexOf('discoverModelsFromRegistry');
+  const dashboard = loadModels.indexOf('discoverModelsFromDashboard');
+  const cache = loadModels.indexOf('readCachedModelCatalog');
+  const openAiCompat = loadModels.indexOf("client.fetch('/v1/models'");
+  const sessions = loadModels.indexOf('discoverModelsFromSessions');
+
+  assert.ok(registry >= 0, 'Web should try the canonical API registry first');
+  assert.ok(dashboard > registry, 'Web should fall back to the dashboard registry after an API registry miss');
+  assert.ok(cache > dashboard, 'Web should retain the side-panel canonical cache fallback');
+  assert.ok(openAiCompat > cache, 'Web should fall back to the OpenAI-compatible model list after the cache');
+  assert.ok(sessions > openAiCompat, 'Web should expand sparse legacy inventories from session history');
+  assert.match(loadModels, /writeCachedModelCatalog/);
+  assert.match(loadModels, /modelCatalogRefreshDecision/);
+  assert.match(renderModelPicker, /isModelRuntimeSelectable/);
+  assert.match(renderModelPicker, /button\.disabled\s*=\s*!selectable/);
+});
+
 test('full-tab run steer failures distinguish stale runs from missing gateway support', () => {
   assert.equal(typeof fulltabRuntime.runSteerFailureState, 'function');
   assert.deepEqual(fulltabRuntime.runSteerFailureState({

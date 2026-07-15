@@ -5,6 +5,8 @@ import {
   estimateTokens,
   groupSessionsForMenu,
   messageDisplayText,
+  isModelRuntimeSelectable,
+  normalizeHermesModels,
   normalizeHermesSessions,
   normalizeHermesSkills,
   normalizeToolActivity,
@@ -21,7 +23,19 @@ import {
   normalizeColorMode,
   resolveColorMode,
 } from './lib/appearance-themes.mjs';
-import { discoverModelsFromRegistry } from './lib/model-discovery.mjs';
+import {
+  MODEL_CATALOG_CACHE_STORAGE_KEY,
+  dashboardModelDiscoveryBaseUrl,
+  discoverModelsFromDashboard,
+  discoverModelsFromRegistry,
+  discoverModelsFromSessions,
+  mergeModelsWithRegistry,
+  modelCatalogCacheKey,
+  modelCatalogRefreshDecision,
+  normalizeCachedModelCatalog,
+  selectModelCatalogFallback,
+  shouldTrySessionModelFallback,
+} from './lib/model-discovery.mjs';
 import { extractMediaTags, resolveImageSource, resolvedGeneratedImageSources, stripGeneratedImageEchoes } from './lib/image-render.mjs';
 import { modelLockRequestOutcome, readHermesSse, runSteerFailureState } from './lib/fulltab-runtime.mjs';
 import { createDiffusionCanvas } from './lib/diffusion-canvas.mjs';
@@ -867,6 +881,9 @@ function renderModelPicker(query = '') {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = `model-choice ${model.id === current.id ? 'selected' : ''}`.trim();
+      const selectable = isModelRuntimeSelectable(model);
+      button.disabled = !selectable;
+      if (!selectable) button.title = 'Observed from session history; not advertised as a requestable Hermes model.';
       const copy = document.createElement('span');
       const provider = document.createElement('small');
       const label = document.createElement('strong');
@@ -876,7 +893,7 @@ function renderModelPicker(query = '') {
       selected.textContent = model.id === current.id ? '✓' : '';
       copy.append(provider, label);
       button.append(copy, selected);
-      button.addEventListener('click', () => selectModel(model));
+      if (selectable) button.addEventListener('click', () => selectModel(model));
       els.modelList.append(button);
     }
   }
@@ -884,10 +901,106 @@ function renderModelPicker(query = '') {
   renderModelRuntimeOptions();
 }
 
+async function readCachedModelCatalog() {
+  try {
+    const stored = await chrome.storage.local.get([MODEL_CATALOG_CACHE_STORAGE_KEY]);
+    const key = modelCatalogCacheKey({
+      gatewayMode: settings.gatewayMode,
+      gatewayUrl: settings.gatewayUrl,
+      profile: settings.activeProfile,
+    });
+    return normalizeCachedModelCatalog(stored?.[MODEL_CATALOG_CACHE_STORAGE_KEY]?.[key]?.models);
+  } catch {
+    return [];
+  }
+}
+
+async function writeCachedModelCatalog(models = []) {
+  const canonicalModels = normalizeCachedModelCatalog(models);
+  if (!canonicalModels.length) return;
+  try {
+    const stored = await chrome.storage.local.get([MODEL_CATALOG_CACHE_STORAGE_KEY]);
+    const cache = stored?.[MODEL_CATALOG_CACHE_STORAGE_KEY] && typeof stored[MODEL_CATALOG_CACHE_STORAGE_KEY] === 'object'
+      ? stored[MODEL_CATALOG_CACHE_STORAGE_KEY]
+      : {};
+    const key = modelCatalogCacheKey({
+      gatewayMode: settings.gatewayMode,
+      gatewayUrl: settings.gatewayUrl,
+      profile: settings.activeProfile,
+    });
+    cache[key] = { savedAt: Date.now(), models: canonicalModels };
+    await chrome.storage.local.set({ [MODEL_CATALOG_CACHE_STORAGE_KEY]: cache });
+  } catch {
+    // Catalog caching is resilience-only; storage failures must not block sync.
+  }
+}
+
 async function loadModels({ refresh = false } = {}) {
-  const result = await discoverModelsFromRegistry({ apiFetch: client.fetch, readJsonResponse: client.readJson, refresh });
-  if (!result.ok) throw new Error(result.error || 'Model discovery failed.');
-  availableModels = result.models;
+  const previousSelectedModel = settings.model;
+  let registryModels = [];
+  let registrySource = '';
+
+  const registryResult = await discoverModelsFromRegistry({ apiFetch: client.fetch, readJsonResponse: client.readJson, refresh });
+  if (registryResult.ok && registryResult.models.length) {
+    registryModels = normalizeHermesModels(registryResult.models, settings.model);
+    registrySource = 'registry';
+  } else {
+    const dashboardResult = await discoverModelsFromDashboard({
+      baseUrl: dashboardModelDiscoveryBaseUrl({
+        gatewayMode: settings.gatewayMode,
+        gatewayUrl: settings.gatewayUrl,
+      }),
+      refresh,
+      profile: settings.activeProfile,
+    });
+    if (dashboardResult.ok && dashboardResult.models.length) {
+      registryModels = normalizeHermesModels(dashboardResult.models, settings.model);
+      registrySource = 'dashboard';
+    } else {
+      const cachedCatalogModels = await readCachedModelCatalog();
+      const cachedFallback = selectModelCatalogFallback({ cachedModels: cachedCatalogModels });
+      if (cachedFallback.models.length) {
+        registryModels = normalizeHermesModels(cachedFallback.models, settings.model);
+        registrySource = cachedFallback.source;
+      } else {
+        const response = await client.fetch('/v1/models', { method: 'GET' });
+        const payload = await client.readJson(response);
+        if (!response.ok) throw new Error(payload?.error?.message || payload?.error || `Model list failed (${response.status})`);
+        registryModels = normalizeHermesModels(payload, settings.model);
+        registrySource = 'v1';
+      }
+    }
+  }
+
+  if (registryModels.length && ['registry', 'dashboard'].includes(registrySource)) {
+    await writeCachedModelCatalog(registryModels);
+  }
+
+  if (shouldTrySessionModelFallback({
+    registryModels,
+    registrySource,
+    defaultModelId: 'hermes-agent',
+  })) {
+    const sessionResult = await discoverModelsFromSessions({ apiFetch: client.fetch, readJsonResponse: client.readJson });
+    if (sessionResult.ok && sessionResult.models.length) {
+      registryModels = normalizeHermesModels(
+        mergeModelsWithRegistry({ registryModels, sessionModels: sessionResult.models }),
+        settings.model,
+      );
+      registrySource = 'sessions';
+    }
+  }
+
+  const refreshDecision = modelCatalogRefreshDecision({
+    previousSelectedModel,
+    discoveredModels: registryModels,
+    refresh,
+  });
+  if (refreshDecision.keepPreviousSelection) {
+    registryModels = normalizeHermesModels(registryModels, refreshDecision.selectedModel);
+  }
+
+  availableModels = registryModels;
   const current = effectiveModel();
   els.modelLabel.textContent = current.label;
   renderModelPicker(els.modelSearch.value);
